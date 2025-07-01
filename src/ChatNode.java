@@ -413,8 +413,16 @@ public class ChatNode {
         Collection<RoutingEntry> entries = routingTable.values();
         int entrySize = 16;
         ByteBuffer buffer = ByteBuffer.allocate(entries.size() * entrySize);
+        String key = myIP.getHostAddress() + ":" + routingPort;
+        RoutingEntry entry = routingTable.get(key);
+        buffer.put(entry.destIP.getAddress());
+        buffer.putShort((short) entry.destPort);
+        buffer.put(entry.nextHopIP.getAddress());
+        buffer.putShort((short) entry.nextHopPort);
+        buffer.put((byte) entry.hopCount);
+        buffer.put(new byte[3]);
 
-        for (RoutingEntry entry : entries) {
+  /*      for (RoutingEntry entry : entries) {
             buffer.put(entry.destIP.getAddress());
             buffer.putShort((short) entry.destPort);
             buffer.put(entry.nextHopIP.getAddress());
@@ -422,6 +430,7 @@ public class ChatNode {
             buffer.put((byte) entry.hopCount);
             buffer.put(new byte[3]);
         }
+        */
         return buffer.array();
     }
 
