@@ -67,6 +67,22 @@ public class ChatNode {
         }
     }
 
+    private void sendRoutingEntryToSpecificNeighbor(InetSocketAddress neighbor) {
+        try {
+            byte[] tableBytes = encodeRoutingEntry();
+            byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
+
+            byte[] packetData = new byte[headerBytes.length + tableBytes.length];
+            System.arraycopy(headerBytes, 0, packetData, 0, headerBytes.length);
+            System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
+
+            DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
+            routingSocket.send(packet);
+        } catch (Exception e) {
+            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
+        }
+    }
+
     private void sendRoutingTableToSpecificNeighbor(InetSocketAddress neighbor) {
         try {
             byte[] tableBytes = encodeRoutingTable();
@@ -83,6 +99,19 @@ public class ChatNode {
         }
     }
 
+    private byte[] encodeRoutingEntry() throws Exception {
+        int entrySize = 16;
+        ByteBuffer buffer = ByteBuffer.allocate(entrySize);
+        String key = myIP.getHostAddress() + ":" + routingPort;
+        RoutingEntry entry = routingTable.get(key);
+        buffer.put(entry.destIP.getAddress());
+        buffer.putShort((short) entry.destPort);
+        buffer.put(entry.nextHopIP.getAddress());
+        buffer.putShort((short) entry.nextHopPort);
+        buffer.put((byte) entry.hopCount);
+        buffer.put(new byte[3]);
+        return buffer.array();
+    }
 
 
     public void disconnectNeighbor(InetSocketAddress neighbor) throws Exception {
@@ -413,16 +442,9 @@ public class ChatNode {
         Collection<RoutingEntry> entries = routingTable.values();
         int entrySize = 16;
         ByteBuffer buffer = ByteBuffer.allocate(entries.size() * entrySize);
-        String key = myIP.getHostAddress() + ":" + routingPort;
-        RoutingEntry entry = routingTable.get(key);
-        buffer.put(entry.destIP.getAddress());
-        buffer.putShort((short) entry.destPort);
-        buffer.put(entry.nextHopIP.getAddress());
-        buffer.putShort((short) entry.nextHopPort);
-        buffer.put((byte) entry.hopCount);
-        buffer.put(new byte[3]);
 
-  /*      for (RoutingEntry entry : entries) {
+
+     for (RoutingEntry entry : entries) {
             buffer.put(entry.destIP.getAddress());
             buffer.putShort((short) entry.destPort);
             buffer.put(entry.nextHopIP.getAddress());
@@ -430,7 +452,7 @@ public class ChatNode {
             buffer.put((byte) entry.hopCount);
             buffer.put(new byte[3]);
         }
-        */
+
         return buffer.array();
     }
 
