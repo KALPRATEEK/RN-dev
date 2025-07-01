@@ -56,7 +56,7 @@ public class ChatNode {
             routingTable.put(key, new RoutingEntry(ip, port, ip, port, 1));
             System.out.println("Nachbar hinzugefügt: " + key);
 
-            sendRoutingTableToSpecificNeighbor(neighbor);
+            sendRoutingEntryToSpecificNeighbor(neighbor);
             for (InetSocketAddress other : directNeighbors) {
                 if (!other.equals(neighbor)) {
                     sendRoutingTableToSpecificNeighbor(other);
@@ -69,7 +69,7 @@ public class ChatNode {
 
     private void sendRoutingEntryToSpecificNeighbor(InetSocketAddress neighbor) {
         try {
-            byte[] tableBytes = encodeRoutingEntry();
+            byte[] tableBytes = encodeMyRoutingEntry();
             byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
 
             byte[] packetData = new byte[headerBytes.length + tableBytes.length];
@@ -99,18 +99,30 @@ public class ChatNode {
         }
     }
 
-    private byte[] encodeRoutingEntry() throws Exception {
-        int entrySize = 16;
-        ByteBuffer buffer = ByteBuffer.allocate(entrySize);
-        String key = myIP.getHostAddress() + ":" + routingPort;
-        RoutingEntry entry = routingTable.get(key);
-        buffer.put(entry.destIP.getAddress());
-        buffer.putShort((short) entry.destPort);
-        buffer.put(entry.nextHopIP.getAddress());
-        buffer.putShort((short) entry.nextHopPort);
-        buffer.put((byte) entry.hopCount);
-        buffer.put(new byte[3]);
-        return buffer.array();
+    private byte[] encodeMyRoutingEntry() throws Exception {
+            Collection<RoutingEntry> entries = new ArrayList<RoutingEntry>();
+            String key = myIP.getHostAddress() + ":" + routingPort;
+            entries.add(routingTable.get(key));
+            ByteBuffer buffer = ByteBuffer.allocate(16);
+
+            for (RoutingEntry entry: entries)
+            {
+                if(entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0)
+                {
+                    continue;
+                }
+                else
+                {
+                    buffer.put(entry.destIP.getAddress());
+                    buffer.putShort((short) entry.destPort);
+                    buffer.put(entry.nextHopIP.getAddress());
+                    buffer.putShort((short) entry.nextHopPort);
+                    buffer.put((byte) entry.hopCount);
+                    buffer.put(new byte[3]);
+                }
+            }
+
+            return buffer.array();
     }
 
 
