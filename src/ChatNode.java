@@ -77,6 +77,23 @@ public class ChatNode {
             System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
+
+   System.out.println("Sending packet to: " + neighbor);
+System.out.println("Packet length: " + packetData.length);
+
+// Print all bytes in decimal
+System.out.print("Packet data (decimal): [");
+for (int i = 0; i < packetData.length; i++) {
+    System.out.print(Byte.toUnsignedInt(packetData[i]));
+    if (i < packetData.length - 1) {
+        System.out.print(", ");
+    }
+}
+System.out.println("]");
+
+            
+            
+            
             routingSocket.send(packet);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
