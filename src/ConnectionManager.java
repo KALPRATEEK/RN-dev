@@ -113,7 +113,7 @@ public class ConnectionManager {
                 remotePort,
                 type,
                 payload.length,
-                CRC16.calculate(payload)
+                CRC.calculate(payload)
         );
         byte[] headerBytes = header.toBytes();
         byte[] packet = new byte[headerBytes.length + payload.length];
