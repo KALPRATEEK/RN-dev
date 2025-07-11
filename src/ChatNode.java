@@ -1,3 +1,4 @@
+
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -229,6 +230,13 @@ public class ChatNode {
 
         InetSocketAddress sender = new InetSocketAddress(srcIP, srcPort);
 
+        // Check if sender is a direct neighbor or unknown
+        String senderKey = srcIP.getHostAddress() + ":" + srcPort;
+        if (routingTable.containsKey(senderKey) && !directNeighbors.contains(sender)) {
+            System.out.println("Ignoring update from non-neighbor in routing table: " + senderKey);
+            return;
+        }
+
         if (length < 14 + tableLength) return;
 
         int entriesCount = tableLength / 16;
@@ -369,7 +377,7 @@ public class ChatNode {
                                     System.out.println("Nachricht empfangen von " + header.sourceIP.getHostAddress()
                                             + ":" + header.sourcePort + " -> " + msg);
                                 } else {
-                                    // Handle file: Save to disk (example implementation)
+                                    // Handle file: Save to disk
                                     String fileName = "received_file_" + System.currentTimeMillis();
                                     try (java.io.FileOutputStream fos = new java.io.FileOutputStream(fileName)) {
                                         fos.write(assembled);
@@ -405,7 +413,6 @@ public class ChatNode {
         }).start();
     }
 
-
     private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
         PacketHeader header = new PacketHeader(myIP, dataPort, ip, port, type, data.length, CRC.calculate(data));
         byte[] headerBytes = header.toBytes();
@@ -416,7 +423,7 @@ public class ChatNode {
         dataSocket.send(packet);
     }
 
-    public void sendMessage(String ipStr, int port, String message) {
+    public void sendMessage(String ipStr, int port, byte[] data) {
         try {
             InetAddress destIP = InetAddress.getByName(ipStr);
             int destDataPort = port + 1;
@@ -437,11 +444,25 @@ public class ChatNode {
                 cm.connect();
             }
 
-            // Send message data
-            byte[] messageBytes = message.getBytes("UTF-8");
-            cm.sendData(messageBytes);
+            // Determine packet type based on data content
+            PacketHeader.PacketType packetType = (data.length > 0 && new String(data, "UTF-8").equals(new String(data))) ?
+                    PacketHeader.PacketType.MESSAGE : PacketHeader.PacketType.FILE;
 
-            System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP + ":" + nextHop.nextHopPort);
+            // Send data
+            cm.sendData(data);
+
+            System.out.println((packetType == PacketHeader.PacketType.MESSAGE ? "Nachricht" : "Datei") +
+                    " gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP + ":" + nextHop.nextHopPort);
+        } catch (Exception e) {
+            System.out.println("Fehler beim Senden der Daten: " + e.getMessage());
+        }
+    }
+
+    // Overload for text messages
+    public void sendMessage(String ipStr, int port, String message) {
+        try {
+            byte[] messageBytes = message.getBytes("UTF-8");
+            sendMessage(ipStr, port, messageBytes);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
         }
