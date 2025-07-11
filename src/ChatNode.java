@@ -6,6 +6,7 @@ import java.util.concurrent.*;
 public class ChatNode {
     private final Map<String, RoutingEntry> routingTable = new ConcurrentHashMap<>();
     private final Set<InetSocketAddress> directNeighbors = ConcurrentHashMap.newKeySet();
+    private final Map<InetSocketAddress, ConnectionManager> connections = new ConcurrentHashMap<>();
 
     private final DatagramSocket routingSocket;
     private final DatagramSocket dataSocket;
@@ -77,23 +78,6 @@ public class ChatNode {
             System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
-
-   System.out.println("Sending packet to: " + neighbor);
-System.out.println("Packet length: " + packetData.length);
-
-// Print all bytes in decimal
-System.out.print("Packet data (decimal): [");
-for (int i = 0; i < packetData.length; i++) {
-    System.out.print(Byte.toUnsignedInt(packetData[i]));
-    if (i < packetData.length - 1) {
-        System.out.print(", ");
-    }
-}
-System.out.println("]");
-
-            
-            
-            
             routingSocket.send(packet);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
@@ -117,41 +101,29 @@ System.out.println("]");
     }
 
     private byte[] encodeMyRoutingEntry() throws Exception {
-            Collection<RoutingEntry> entries = new ArrayList<RoutingEntry>();
-            String key = myIP.getHostAddress() + ":" + routingPort;
-            entries.add(routingTable.get(key));
-            ByteBuffer buffer = ByteBuffer.allocate(16);
+        Collection<RoutingEntry> entries = new ArrayList<>();
+        String key = myIP.getHostAddress() + ":" + routingPort;
+        entries.add(routingTable.get(key));
+        ByteBuffer buffer = ByteBuffer.allocate(16);
 
-            for (RoutingEntry entry: entries)
-            {
-                if(entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0)
-                {
-                    continue;
-                }
-                else
-                {
-                    buffer.put(entry.destIP.getAddress());
-                    buffer.putShort((short) entry.destPort);
-                    buffer.put(entry.nextHopIP.getAddress());
-                    buffer.putShort((short) entry.nextHopPort);
-                    buffer.put((byte) entry.hopCount);
-                    buffer.put(new byte[3]);
-                }
+        for (RoutingEntry entry : entries) {
+            if (entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0) {
+                continue;
             }
-
-            return buffer.array();
+            buffer.put(entry.destIP.getAddress());
+            buffer.putShort((short) entry.destPort);
+            buffer.put(entry.nextHopIP.getAddress());
+            buffer.putShort((short) entry.nextHopPort);
+            buffer.put((byte) entry.hopCount);
+            buffer.put(new byte[3]);
+        }
+        return buffer.array();
     }
 
-
     public void disconnectNeighbor(InetSocketAddress neighbor) throws Exception {
-        // Sende ein Poisoned Update an den Nachbarn
         sendPoisonedUpdate(neighbor);
-
-        // Entferne den Nachbarn aus der Liste der direkten Nachbarn
         if (directNeighbors.remove(neighbor)) {
             System.out.println("Nachbar entfernt: " + neighbor);
-
-            // Entferne alle Routen aus der Routing-Tabelle, die über diesen Nachbarn gingen
             Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
             boolean routingTableChanged = false;
             while (iter.hasNext()) {
@@ -162,16 +134,18 @@ System.out.println("]");
                     routingTableChanged = true;
                 }
             }
-
-            // Entferne den direkten Eintrag für den Nachbarn selbst, falls vorhanden
             String neighborKey = neighbor.getAddress().getHostAddress() + ":" + neighbor.getPort();
             if (routingTable.remove(neighborKey) != null) {
                 routingTableChanged = true;
             }
-
-            // Sende aktualisierte Routing-Tabelle an verbleibende Nachbarn
             if (routingTableChanged) {
                 sendRoutingTableToNeighbors();
+            }
+            // Disconnect any active connections
+            ConnectionManager cm = connections.remove(neighbor);
+            if (cm != null) {
+                cm.disconnect();
+                cm.shutdown();
             }
         }
     }
@@ -222,6 +196,7 @@ System.out.println("]");
         running = false;
         routingSocket.close();
         dataSocket.close();
+        connections.values().forEach(ConnectionManager::shutdown);
         System.out.println("Node wurde heruntergefahren.");
     }
 
@@ -242,17 +217,14 @@ System.out.println("]");
         if (length < 14) return;
 
         ByteBuffer buffer = ByteBuffer.wrap(data, 0, length);
-
         byte[] srcIPBytes = new byte[4];
         buffer.get(srcIPBytes);
         InetAddress srcIP = InetAddress.getByAddress(srcIPBytes);
         int srcPort = Short.toUnsignedInt(buffer.getShort());
-
         byte[] destIPBytes = new byte[4];
         buffer.get(destIPBytes);
         InetAddress destIP = InetAddress.getByAddress(destIPBytes);
         int destPort = Short.toUnsignedInt(buffer.getShort());
-
         int tableLength = Short.toUnsignedInt(buffer.getShort());
 
         InetSocketAddress sender = new InetSocketAddress(srcIP, srcPort);
@@ -264,7 +236,6 @@ System.out.println("]");
         boolean isPoisonedUpdate = false;
         boolean routingTableChanged = false;
 
-        // Verarbeite alle Einträge im Update
         for (int i = 0; i < entriesCount; i++) {
             byte[] entryBytes = new byte[16];
             buffer.get(entryBytes);
@@ -281,7 +252,6 @@ System.out.println("]");
             int nextHopPort = Short.toUnsignedInt(entryBuffer.getShort());
 
             int hopCount = Byte.toUnsignedInt(entryBuffer.get());
-
             byte[] nullBytes = new byte[3];
             entryBuffer.get(nullBytes);
             if (!(nullBytes[0] == 0 && nullBytes[1] == 0 && nullBytes[2] == 0)) return;
@@ -289,7 +259,6 @@ System.out.println("]");
             String key = destEntryIP.getHostAddress() + ":" + destEntryPort;
             advertisedDestinations.add(key);
 
-            // Prüfe, ob dies ein Poisoned Update für den Sender selbst ist
             if (destEntryIP.equals(srcIP) && destEntryPort == srcPort && hopCount == 16) {
                 isPoisonedUpdate = true;
             }
@@ -307,7 +276,7 @@ System.out.println("]");
                     routingTable.put(key, new RoutingEntry(destEntryIP, destEntryPort, srcIP, srcPort, newHopCount));
                     routingTableChanged = true;
                 } else if (currentEntry != null) {
-                    if (newHopCount < currentEntry.hopCount && currentEntry.hopCount != 16) {
+                    if (newHopCount < currentEntry.hopCount) {
                         currentEntry.hopCount = newHopCount;
                         currentEntry.nextHopIP = srcIP;
                         currentEntry.nextHopPort = srcPort;
@@ -322,11 +291,9 @@ System.out.println("]");
             }
         }
 
-        // Behandle Poisoned Update
         if (isPoisonedUpdate) {
             if (directNeighbors.remove(sender)) {
                 System.out.println("Nachbar entfernt: " + sender);
-                // Entferne alle Routen, die über diesen Nachbarn gingen
                 Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
                 while (iter.hasNext()) {
                     Map.Entry<String, RoutingEntry> entry = iter.next();
@@ -336,13 +303,13 @@ System.out.println("]");
                         routingTableChanged = true;
                     }
                 }
+                connections.remove(sender);
             }
         } else if (!directNeighbors.contains(sender)) {
             directNeighbors.add(sender);
             System.out.println("Neuer Nachbar hinzugefügt: " + sender);
         }
 
-        // Entferne Routen, die nicht mehr beworben werden
         Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
         while (iter.hasNext()) {
             Map.Entry<String, RoutingEntry> entry = iter.next();
@@ -360,6 +327,7 @@ System.out.println("]");
     }
 
     private void startDataReceiver() {
+        FragmentManager fm = new FragmentManager();
         new Thread(() -> {
             byte[] buf = new byte[1500];
             while (running) {
@@ -368,30 +336,82 @@ System.out.println("]");
                     dataSocket.receive(packet);
                     ByteBuffer buffer = ByteBuffer.wrap(packet.getData(), 0, packet.getLength());
 
-                    byte type = buffer.get();
-                    if (type == PacketType.SYN.getValue()) {
-                        sendPacket(PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                    } else if (type == PacketType.SYN_ACK.getValue()) {
-                        String key = packet.getAddress().getHostAddress() + ":" + packet.getPort();
-                        establishedConnections.add(key);
-                        System.out.println("Verbindung hergestellt mit " + key);
-                    } else {
-                        byte[] msgBytes = new byte[buffer.remaining()];
-                        buffer.get(msgBytes);
-                        String msg = new String(msgBytes, "UTF-8");
-                        System.out.println("Nachricht empfangen von " + packet.getAddress().getHostAddress()
-                                + ":" + packet.getPort() + " -> " + msg);
+                    PacketHeader header = PacketHeader.fromBytes(Arrays.copyOfRange(packet.getData(), 0, PacketHeader.HEADER_SIZE));
+                    byte[] payload = Arrays.copyOfRange(packet.getData(), PacketHeader.HEADER_SIZE, packet.getLength());
+
+                    // Verify checksum
+                    if (header.checksum != CRC.calculate(payload)) {
+                        System.out.println("Checksum mismatch for packet from " + header.sourceIP + ":" + header.sourcePort);
+                        continue;
                     }
-                } catch (Exception ignored) {}
+
+                    InetSocketAddress sender = new InetSocketAddress(header.sourceIP, header.sourcePort);
+                    ConnectionManager cm = connections.computeIfAbsent(sender,
+                            k -> new ConnectionManager(dataSocket, header.sourceIP, header.sourcePort));
+
+                    if (header.type == PacketHeader.PacketType.SYN) {
+                        cm.processPacket(header, payload);
+                    } else if (header.type == PacketHeader.PacketType.SYN_ACK) {
+                        cm.processPacket(header, payload);
+                        establishedConnections.add(header.sourceIP.getHostAddress() + ":" + header.sourcePort);
+                        System.out.println("Verbindung hergestellt mit " + header.sourceIP.getHostAddress() + ":" + header.sourcePort);
+                    } else if (header.type == PacketHeader.PacketType.ACK || header.type == PacketHeader.PacketType.FIN || header.type == PacketHeader.PacketType.FIN_ACK) {
+                        cm.processPacket(header, payload);
+                    } else if (header.type == PacketHeader.PacketType.MESSAGE || header.type == PacketHeader.PacketType.FILE) {
+                        // Check if this node is the final destination
+                        String destKey = myIP.getHostAddress() + ":" + dataPort;
+                        if (header.destIP.equals(myIP) && header.destPort == dataPort) {
+                            byte[] assembled = fm.processChunk(payload, header.checksum);
+                            if (assembled != null) {
+                                if (header.type == PacketHeader.PacketType.MESSAGE) {
+                                    // Handle text message
+                                    String msg = new String(assembled, "UTF-8");
+                                    System.out.println("Nachricht empfangen von " + header.sourceIP.getHostAddress()
+                                            + ":" + header.sourcePort + " -> " + msg);
+                                } else {
+                                    // Handle file: Save to disk (example implementation)
+                                    String fileName = "received_file_" + System.currentTimeMillis();
+                                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(fileName)) {
+                                        fos.write(assembled);
+                                        System.out.println("Datei empfangen von " + header.sourceIP.getHostAddress()
+                                                + ":" + header.sourcePort + " -> Gespeichert als " + fileName);
+                                    } catch (java.io.IOException e) {
+                                        System.out.println("Fehler beim Speichern der Datei: " + e.getMessage());
+                                    }
+                                }
+                                // Send ACK for received message/file
+                                cm.processPacket(new PacketHeader(myIP, dataPort, header.sourceIP, header.sourcePort,
+                                        PacketHeader.PacketType.ACK, header.length, 0), new byte[0]);
+                            }
+                        } else {
+                            // Forward to next hop
+                            String targetKey = header.destIP.getHostAddress() + ":" + header.destPort;
+                            RoutingEntry nextHop = routingTable.get(targetKey);
+                            if (nextHop != null) {
+                                DatagramPacket forwardPacket = new DatagramPacket(
+                                        packet.getData(), packet.getLength(),
+                                        nextHop.nextHopIP, nextHop.nextHopPort);
+                                dataSocket.send(forwardPacket);
+                                System.out.println("Forwarded packet to " + nextHop.nextHopIP + ":" + nextHop.nextHopPort);
+                            } else {
+                                System.out.println("No route to " + targetKey);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.out.println("Error in data receiver: " + e.getMessage());
+                }
             }
         }).start();
     }
 
-    private void sendPacket(PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
-        ByteBuffer buffer = ByteBuffer.allocate(1 + data.length);
-        buffer.put(type.getValue());
-        buffer.put(data);
-        byte[] packetData = buffer.array();
+
+    private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
+        PacketHeader header = new PacketHeader(myIP, dataPort, ip, port, type, data.length, CRC.calculate(data));
+        byte[] headerBytes = header.toBytes();
+        byte[] packetData = new byte[headerBytes.length + data.length];
+        System.arraycopy(headerBytes, 0, packetData, 0, headerBytes.length);
+        System.arraycopy(data, 0, packetData, headerBytes.length, data.length);
         DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
         dataSocket.send(packet);
     }
@@ -400,50 +420,41 @@ System.out.println("]");
         try {
             InetAddress destIP = InetAddress.getByName(ipStr);
             int destDataPort = port + 1;
+            String targetKey = destIP.getHostAddress() + ":" + destDataPort;
 
-            byte typeByte = PacketType.MESSAGE.getValue();
+            // Check routing table for next hop
+            RoutingEntry nextHop = routingTable.get(targetKey);
+            if (nextHop == null) {
+                System.out.println("No route to " + targetKey);
+                return;
+            }
+
+            // Establish connection if not already established
+            InetSocketAddress nextHopAddr = new InetSocketAddress(nextHop.nextHopIP, nextHop.nextHopPort);
+            ConnectionManager cm = connections.computeIfAbsent(nextHopAddr,
+                    k -> new ConnectionManager(dataSocket, nextHop.nextHopIP, nextHop.nextHopPort));
+            if (!establishedConnections.contains(nextHop.nextHopIP.getHostAddress() + ":" + nextHop.nextHopPort)) {
+                cm.connect();
+            }
+
+            // Send message data
             byte[] messageBytes = message.getBytes("UTF-8");
+            cm.sendData(messageBytes);
 
-            // Create byte array with 1 extra byte for the type
-            byte[] packetBytes = new byte[1 + messageBytes.length];
-            packetBytes[0] = typeByte;
-            System.arraycopy(messageBytes, 0, packetBytes, 1, messageBytes.length);
-
-            DatagramPacket packet = new DatagramPacket(packetBytes, packetBytes.length, destIP, destDataPort);
-            dataSocket.send(packet);
-
-            System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
+            System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP + ":" + nextHop.nextHopPort);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
-        }
-    }
-
-
-    public enum PacketType {
-        FILE((byte) 0),
-        MESSAGE((byte) 1),
-        SYN((byte) 2),
-        ACK((byte) 3),
-        FIN((byte) 4),
-        SYN_ACK((byte) 5),
-        FIN_ACK((byte) 6);
-
-        private final byte value;
-
-        PacketType(byte value) {
-            this.value = value;
-        }
-
-        public byte getValue() {
-            return value;
         }
     }
 
     public void initiateConnection(String ipStr, int port) {
         try {
             InetAddress ip = InetAddress.getByName(ipStr);
-            sendPacket(PacketType.SYN, new byte[0], ip, port + 1);
-            System.out.println("SYN gesendet an " + ipStr + ":" + (port + 1));
+            InetSocketAddress dest = new InetSocketAddress(ip, port + 1);
+            ConnectionManager cm = connections.computeIfAbsent(dest,
+                    k -> new ConnectionManager(dataSocket, ip, port + 1));
+            cm.connect();
+            System.out.println("Verbindungsaufbau initiiert mit " + ipStr + ":" + (port + 1));
         } catch (Exception e) {
             System.out.println("Fehler beim Verbindungsaufbau: " + e.getMessage());
         }
@@ -472,8 +483,7 @@ System.out.println("]");
         int entrySize = 16;
         ByteBuffer buffer = ByteBuffer.allocate(entries.size() * entrySize);
 
-
-     for (RoutingEntry entry : entries) {
+        for (RoutingEntry entry : entries) {
             buffer.put(entry.destIP.getAddress());
             buffer.putShort((short) entry.destPort);
             buffer.put(entry.nextHopIP.getAddress());
@@ -481,7 +491,6 @@ System.out.println("]");
             buffer.put((byte) entry.hopCount);
             buffer.put(new byte[3]);
         }
-
         return buffer.array();
     }
 

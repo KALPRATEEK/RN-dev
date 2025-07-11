@@ -1,16 +1,17 @@
-// FragmentManager.java
-
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 
+// Manages fragmentation and reassembly of messages
 public class FragmentManager {
-    private static final int MAX_CHUNK_PAYLOAD = 980; // Beispiel: MTU 1000 - Header ca. 20 Bytes
+    private static final int MAX_CHUNK_PAYLOAD = 980; // MTU 1000 - headers
+    private static final int TIMEOUT_MS = 5000; // 5-second timeout for incomplete messages
 
     private final Map<Integer, MessageReassemblyBuffer> reassemblyBuffers = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService timeoutExecutor = Executors.newScheduledThreadPool(1);
     private int nextMessageId = 0;
 
-    // Zerlegt Payload in Chunks mit Fragmentierungsheader (MessageID, ChunkNumber, TotalChunks)
+    // Fragment payload into chunks with fragmentation header
     public List<byte[]> fragment(byte[] payload) {
         int totalChunks = (payload.length + MAX_CHUNK_PAYLOAD - 1) / MAX_CHUNK_PAYLOAD;
         int messageId = getNextMessageId();
@@ -22,18 +23,24 @@ public class FragmentManager {
             byte[] chunkPayload = Arrays.copyOfRange(payload, start, end);
 
             ByteBuffer buffer = ByteBuffer.allocate(10 + chunkPayload.length);
-            buffer.putShort((short) messageId);         // MessageID (2 Byte)
-            buffer.putInt(i);                            // ChunkNumber (4 Byte)
-            buffer.putInt(totalChunks);                  // TotalChunks (4 Byte)
-            buffer.put(chunkPayload);                     // Payload
-
+            buffer.putShort((short) messageId); // MessageID (2 bytes)
+            buffer.putInt(i); // ChunkNumber (4 bytes)
+            buffer.putInt(totalChunks); // TotalChunks (4 bytes)
+            buffer.put(chunkPayload); // Payload
             chunks.add(buffer.array());
         }
         return chunks;
     }
 
-    // Verarbeitet einen Chunk: Rückgabe des vollständigen Payloads, wenn komplett, sonst null
-    public byte[] processChunk(byte[] chunkData) {
+    // Process a chunk, verify checksum, and return assembled payload if complete
+    public byte[] processChunk(byte[] chunkData, int expectedChecksum) {
+        // Verify checksum
+        int calculatedChecksum = CRC.calculate(chunkData);
+        if (calculatedChecksum != expectedChecksum) {
+            System.out.println("Checksum mismatch: expected " + expectedChecksum + ", got " + calculatedChecksum);
+            return null; // Discard invalid chunk
+        }
+
         ByteBuffer buffer = ByteBuffer.wrap(chunkData);
         int messageId = Short.toUnsignedInt(buffer.getShort());
         int chunkNumber = buffer.getInt();
@@ -43,23 +50,31 @@ public class FragmentManager {
         buffer.get(payload);
 
         MessageReassemblyBuffer reassemblyBuffer = reassemblyBuffers.computeIfAbsent(messageId,
-                id -> new MessageReassemblyBuffer(totalChunks));
+                id -> {
+                    MessageReassemblyBuffer buf = new MessageReassemblyBuffer(totalChunks);
+                    // Schedule timeout for incomplete messages
+                    timeoutExecutor.schedule(() -> {
+                        if (!buf.isComplete()) { // Use buf instead of reassemblyBuffer
+                            reassemblyBuffers.remove(messageId);
+                            System.out.println("Timeout: Discarded incomplete message ID " + messageId);
+                        }
+                    }, TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    return buf;
+                });
 
         reassemblyBuffer.addChunk(chunkNumber, payload);
 
         if (reassemblyBuffer.isComplete()) {
             reassemblyBuffers.remove(messageId);
             return reassemblyBuffer.assemble();
-        } else {
-            return null;
         }
+        return null;
     }
 
     private synchronized int getNextMessageId() {
         return nextMessageId++;
     }
 
-    // Hilfsklasse für das Rekonstruieren einer Nachricht aus Chunks
     private static class MessageReassemblyBuffer {
         private final int totalChunks;
         private final Map<Integer, byte[]> chunks = new ConcurrentHashMap<>();
@@ -86,6 +101,17 @@ public class FragmentManager {
                 pos += chunk.length;
             }
             return fullPayload;
+        }
+    }
+
+    public void shutdown() {
+        timeoutExecutor.shutdown();
+        try {
+            if (!timeoutExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                timeoutExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            timeoutExecutor.shutdownNow();
         }
     }
 }
