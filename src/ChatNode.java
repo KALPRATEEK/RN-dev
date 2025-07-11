@@ -1,8 +1,8 @@
-
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.zip.CRC32;
 
 public class ChatNode {
     private final Map<String, RoutingEntry> routingTable = new ConcurrentHashMap<>();
@@ -18,6 +18,15 @@ public class ChatNode {
     private final Set<String> establishedConnections = ConcurrentHashMap.newKeySet();
 
     public ChatNode(InetAddress ip, int routingPort) throws Exception {
+        if (ip == null) {
+            throw new IllegalArgumentException("IP cannot be null");
+        }
+        if (!(ip instanceof Inet4Address)) {
+            throw new IllegalArgumentException("IP must be IPv4");
+        }
+        if (routingPort <= 0 || routingPort > 65535) {
+            throw new IllegalArgumentException("Invalid routing port: " + routingPort);
+        }
         this.routingPort = routingPort;
         this.dataPort = routingPort + 1;
         this.routingSocket = new DatagramSocket(routingPort);
@@ -40,7 +49,16 @@ public class ChatNode {
 
     public void connectNeighbor(String ipStr, int port) {
         try {
+            if (ipStr == null || ipStr.isEmpty()) {
+                throw new IllegalArgumentException("IP string cannot be null or empty");
+            }
+            if (port <= 0 || port > 65535) {
+                throw new IllegalArgumentException("Invalid port: " + port);
+            }
             InetAddress ip = InetAddress.getByName(ipStr);
+            if (!(ip instanceof Inet4Address)) {
+                throw new IllegalArgumentException("Neighbor IP must be IPv4");
+            }
             InetSocketAddress neighbor = new InetSocketAddress(ip, port);
 
             if (port % 2 != 0) {
@@ -65,12 +83,16 @@ public class ChatNode {
                 }
             }
         } catch (Exception e) {
-            System.out.println("Fehler beim Verbinden des Nachbarn: " + e.getMessage());
+            System.out.println("Fehler beim Verbinden des Nachbarn: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     private void sendRoutingEntryToSpecificNeighbor(InetSocketAddress neighbor) {
         try {
+            if (neighbor == null) {
+                throw new IllegalArgumentException("Neighbor cannot be null");
+            }
             byte[] tableBytes = encodeMyRoutingEntry();
             byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
 
@@ -80,13 +102,18 @@ public class ChatNode {
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
             routingSocket.send(packet);
+            System.out.println("Routing entry sent to " + neighbor);
         } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
+            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     private void sendRoutingTableToSpecificNeighbor(InetSocketAddress neighbor) {
         try {
+            if (neighbor == null) {
+                throw new IllegalArgumentException("Neighbor cannot be null");
+            }
             byte[] tableBytes = encodeRoutingTable();
             byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
 
@@ -96,8 +123,10 @@ public class ChatNode {
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
             routingSocket.send(packet);
+            System.out.println("Routing table sent to " + neighbor);
         } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
+            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -122,6 +151,9 @@ public class ChatNode {
     }
 
     public void disconnectNeighbor(InetSocketAddress neighbor) throws Exception {
+        if (neighbor == null) {
+            throw new IllegalArgumentException("Neighbor cannot be null");
+        }
         sendPoisonedUpdate(neighbor);
         if (directNeighbors.remove(neighbor)) {
             System.out.println("Nachbar entfernt: " + neighbor);
@@ -153,6 +185,9 @@ public class ChatNode {
 
     private void sendPoisonedUpdate(InetSocketAddress neighbor) {
         try {
+            if (neighbor == null) {
+                throw new IllegalArgumentException("Neighbor cannot be null");
+            }
             RoutingEntry poisonedEntry = new RoutingEntry(myIP, routingPort, myIP, routingPort, 16);
             byte[] tableBytes = encodeSingleRoutingEntry(poisonedEntry);
             byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
@@ -166,11 +201,15 @@ public class ChatNode {
 
             System.out.println("Poisoned Update gesendet an " + neighbor);
         } catch (Exception e) {
-            System.out.println("Fehler beim Senden des Poisoned Updates: " + e.getMessage());
+            System.out.println("Fehler beim Senden des Poisoned Updates: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     private byte[] encodeSingleRoutingEntry(RoutingEntry entry) throws Exception {
+        if (entry == null) {
+            throw new IllegalArgumentException("Routing entry cannot be null");
+        }
         ByteBuffer buffer = ByteBuffer.allocate(16);
         buffer.put(entry.destIP.getAddress());
         buffer.putShort((short) entry.destPort);
@@ -209,13 +248,18 @@ public class ChatNode {
                     DatagramPacket packet = new DatagramPacket(buf, buf.length);
                     routingSocket.receive(packet);
                     processRoutingUpdate(packet.getData(), packet.getLength());
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    System.out.println("Error in routing receiver: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                }
             }
         }).start();
     }
 
     private void processRoutingUpdate(byte[] data, int length) throws Exception {
-        if (length < 14) return;
+        if (length < 14) {
+            System.out.println("Routing update too short: " + length + " bytes");
+            return;
+        }
 
         ByteBuffer buffer = ByteBuffer.wrap(data, 0, length);
         byte[] srcIPBytes = new byte[4];
@@ -223,8 +267,12 @@ public class ChatNode {
         InetAddress srcIP;
         try {
             srcIP = InetAddress.getByAddress(srcIPBytes);
+            if (!(srcIP instanceof Inet4Address)) {
+                System.out.println("Invalid source IP in routing update: not IPv4");
+                return;
+            }
         } catch (UnknownHostException e) {
-            System.out.println("Invalid source IP in routing update");
+            System.out.println("Invalid source IP in routing update: " + e.getMessage());
             return;
         }
         int srcPort = Short.toUnsignedInt(buffer.getShort());
@@ -233,8 +281,12 @@ public class ChatNode {
         InetAddress destIP;
         try {
             destIP = InetAddress.getByAddress(destIPBytes);
+            if (!(destIP instanceof Inet4Address)) {
+                System.out.println("Invalid destination IP in routing update: not IPv4");
+                return;
+            }
         } catch (UnknownHostException e) {
-            System.out.println("Invalid destination IP in routing update");
+            System.out.println("Invalid destination IP in routing update: " + e.getMessage());
             return;
         }
         int destPort = Short.toUnsignedInt(buffer.getShort());
@@ -249,7 +301,10 @@ public class ChatNode {
             return;
         }
 
-        if (length < 14 + tableLength) return;
+        if (length < 14 + tableLength) {
+            System.out.println("Invalid routing update length: " + length + ", expected at least " + (14 + tableLength));
+            return;
+        }
 
         int entriesCount = tableLength / 16;
         Set<String> advertisedDestinations = new HashSet<>();
@@ -266,8 +321,12 @@ public class ChatNode {
             InetAddress destEntryIP;
             try {
                 destEntryIP = InetAddress.getByAddress(destEntryIPBytes);
+                if (!(destEntryIP instanceof Inet4Address)) {
+                    System.out.println("Invalid destination IP in routing entry: not IPv4");
+                    continue;
+                }
             } catch (UnknownHostException e) {
-                System.out.println("Invalid destination IP in routing entry");
+                System.out.println("Invalid destination IP in routing entry: " + e.getMessage());
                 continue;
             }
             int destEntryPort = Short.toUnsignedInt(entryBuffer.getShort());
@@ -277,8 +336,12 @@ public class ChatNode {
             InetAddress nextHopIP;
             try {
                 nextHopIP = InetAddress.getByAddress(nextHopIPBytes);
+                if (!(nextHopIP instanceof Inet4Address)) {
+                    System.out.println("Invalid next hop IP in routing entry: not IPv4");
+                    continue;
+                }
             } catch (UnknownHostException e) {
-                System.out.println("Invalid next hop IP in routing entry");
+                System.out.println("Invalid next hop IP in routing entry: " + e.getMessage());
                 continue;
             }
             int nextHopPort = Short.toUnsignedInt(entryBuffer.getShort());
@@ -377,18 +440,26 @@ public class ChatNode {
                     dataSocket.receive(packet);
                     ByteBuffer buffer = ByteBuffer.wrap(packet.getData(), 0, packet.getLength());
 
+                    if (packet.getLength() < PacketHeader.HEADER_SIZE) {
+                        System.out.println("Received packet too short: " + packet.getLength() + " bytes");
+                        continue;
+                    }
+
                     PacketHeader header = PacketHeader.fromBytes(Arrays.copyOfRange(packet.getData(), 0, PacketHeader.HEADER_SIZE));
                     byte[] payload = Arrays.copyOfRange(packet.getData(), PacketHeader.HEADER_SIZE, packet.getLength());
 
                     // Verify checksum
                     if (header.checksum != CRC.calculate(payload)) {
-                        System.out.println("Checksum mismatch for packet from " + header.sourceIP + ":" + header.sourcePort);
+                        System.out.println("Checksum mismatch for packet from " + header.sourceIP.getHostAddress() + ":" + header.sourcePort);
                         continue;
                     }
 
                     InetSocketAddress sender = new InetSocketAddress(header.sourceIP, header.sourcePort);
                     ConnectionManager cm = connections.computeIfAbsent(sender,
-                            k -> new ConnectionManager(dataSocket, header.sourceIP, header.sourcePort));
+                            k -> {
+                                System.out.println("Creating new ConnectionManager for " + sender);
+                                return new ConnectionManager(dataSocket, header.sourceIP, header.sourcePort);
+                            });
 
                     if (header.type == PacketHeader.PacketType.SYN) {
                         cm.processPacket(header, payload);
@@ -417,7 +488,7 @@ public class ChatNode {
                                         System.out.println("Datei empfangen von " + header.sourceIP.getHostAddress()
                                                 + ":" + header.sourcePort + " -> Gespeichert als " + fileName);
                                     } catch (java.io.IOException e) {
-                                        System.out.println("Fehler beim Speichern der Datei: " + e.getMessage());
+                                        System.out.println("Fehler beim Speichern der Datei: " + e.getClass().getSimpleName() + ": " + e.getMessage());
                                     }
                                 }
                                 // Send ACK for received message/file
@@ -440,30 +511,63 @@ public class ChatNode {
                         }
                     }
                 } catch (Exception e) {
-                    System.out.println("Error in data receiver: " + e.getMessage());
+                    System.out.println("Error in data receiver: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    e.printStackTrace();
                 }
             }
         }).start();
     }
 
     private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
-        PacketHeader header = new PacketHeader(myIP, dataPort, ip, port, type, data.length, CRC.calculate(data));
+        if (type == null) {
+            throw new IllegalArgumentException("Packet type cannot be null");
+        }
+        if (data == null) {
+            throw new IllegalArgumentException("Data cannot be null");
+        }
+        if (ip == null) {
+            throw new IllegalArgumentException("Destination IP cannot be null");
+        }
+        if (!(ip instanceof Inet4Address)) {
+            throw new IllegalArgumentException("Destination IP must be IPv4");
+        }
+        if (port <= 0 || port > 65535) {
+            throw new IllegalArgumentException("Invalid destination port: " + port);
+        }
+        int checksum = CRC.calculate(data);
+        PacketHeader header = new PacketHeader(myIP, dataPort, ip, port, type, data.length, checksum);
         byte[] headerBytes = header.toBytes();
+        if (headerBytes.length != PacketHeader.HEADER_SIZE) {
+            throw new IllegalStateException("Header size mismatch: expected " + PacketHeader.HEADER_SIZE + ", got " + headerBytes.length);
+        }
         byte[] packetData = new byte[headerBytes.length + data.length];
         System.arraycopy(headerBytes, 0, packetData, 0, headerBytes.length);
         System.arraycopy(data, 0, packetData, headerBytes.length, data.length);
         DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
         dataSocket.send(packet);
+        System.out.println("Sent packet type " + type + " to " + ip.getHostAddress() + ":" + port);
     }
 
     public void sendMessage(String ipStr, int port, byte[] data) {
         try {
+            if (ipStr == null || ipStr.isEmpty()) {
+                throw new IllegalArgumentException("IP string cannot be null or empty");
+            }
+            if (port <= 0 || port > 65535) {
+                throw new IllegalArgumentException("Invalid port: " + port);
+            }
+            if (data == null) {
+                throw new IllegalArgumentException("Data cannot be null");
+            }
             System.out.println("Attempting to send data to " + ipStr + ":" + (port + 1));
             if (dataSocket == null || dataSocket.isClosed()) {
                 throw new IllegalStateException("Data socket is null or closed");
             }
 
             InetAddress destIP = InetAddress.getByName(ipStr);
+            if (!(destIP instanceof Inet4Address)) {
+                throw new IllegalArgumentException("Destination IP must be IPv4");
+            }
             int destDataPort = port + 1; // Destination data port (n+1)
             String targetKey = destIP.getHostAddress() + ":" + port; // Use routing port (n) for routing table lookup
 
@@ -510,11 +614,8 @@ public class ChatNode {
 
             System.out.println((packetType == PacketHeader.PacketType.MESSAGE ? "Nachricht" : "Datei") +
                     " gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1));
-        } catch (NullPointerException e) {
-            System.err.println("NullPointerException beim Senden der Daten: " + e.getMessage());
-            e.printStackTrace();
         } catch (Exception e) {
-            System.err.println("Fehler beim Senden der Daten: " + e.getMessage());
+            System.err.println("Fehler beim Senden der Daten an " + ipStr + ":" + (port + 1) + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -532,16 +633,29 @@ public class ChatNode {
     // Overload for text messages
     public void sendMessage(String ipStr, int port, String message) {
         try {
+            if (message == null) {
+                throw new IllegalArgumentException("Message cannot be null");
+            }
             byte[] messageBytes = message.getBytes("UTF-8");
             sendMessage(ipStr, port, messageBytes);
         } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
+            System.out.println("Fehler beim Senden der Nachricht: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     public void initiateConnection(String ipStr, int port) {
         try {
+            if (ipStr == null || ipStr.isEmpty()) {
+                throw new IllegalArgumentException("IP string cannot be null or empty");
+            }
+            if (port <= 0 || port > 65535) {
+                throw new IllegalArgumentException("Invalid port: " + port);
+            }
             InetAddress ip = InetAddress.getByName(ipStr);
+            if (!(ip instanceof Inet4Address)) {
+                throw new IllegalArgumentException("Destination IP must be IPv4");
+            }
             int destDataPort = port + 1;
             InetSocketAddress dest = new InetSocketAddress(ip, destDataPort);
             ConnectionManager cm = connections.computeIfAbsent(dest,
@@ -553,7 +667,8 @@ public class ChatNode {
             establishedConnections.add(ip.getHostAddress() + ":" + destDataPort);
             System.out.println("Verbindungsaufbau initiiert mit " + ipStr + ":" + destDataPort);
         } catch (Exception e) {
-            System.out.println("Fehler beim Verbindungsaufbau: " + e.getMessage());
+            System.out.println("Fehler beim Verbindungsaufbau: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -569,9 +684,11 @@ public class ChatNode {
 
                 DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
                 routingSocket.send(packet);
+                System.out.println("Routing table sent to " + neighbor);
             }
         } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
+            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -594,5 +711,22 @@ public class ChatNode {
         return buffer.array();
     }
 
-    private byte[] createRoutingHeader(InetAddress srcIP, int srcPort, InetAddress destIP, int destPort, int tableLength) {    ByteBuffer buffer = ByteBuffer.allocate(14);    buffer.put(srcIP.getAddress());    buffer.putShort((short) srcPort);    buffer.put(destIP.getAddress());    buffer.putShort((short) destPort);    buffer.putShort((short) tableLength);    return buffer.array();}
+    private byte[] createRoutingHeader(InetAddress srcIP, int srcPort, InetAddress destIP, int destPort, int tableLength) {
+        if (srcIP == null || destIP == null) {
+            throw new IllegalArgumentException("Source or destination IP cannot be null");
+        }
+        if (!(srcIP instanceof Inet4Address) || !(destIP instanceof Inet4Address)) {
+            throw new IllegalArgumentException("Source and destination IPs must be IPv4");
+        }
+        if (srcPort <= 0 || srcPort > 65535 || destPort <= 0 || destPort > 65535) {
+            throw new IllegalArgumentException("Invalid ports: srcPort=" + srcPort + ", destPort=" + destPort);
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(14);
+        buffer.put(srcIP.getAddress());
+        buffer.putShort((short) srcPort);
+        buffer.put(destIP.getAddress());
+        buffer.putShort((short) destPort);
+        buffer.putShort((short) tableLength);
+        return buffer.array();
+    }
 }

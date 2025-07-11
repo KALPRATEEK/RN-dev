@@ -1,5 +1,5 @@
-
 import java.net.InetAddress;
+import java.net.Inet4Address;
 import java.nio.ByteBuffer;
 
 public class PacketHeader {
@@ -18,6 +18,9 @@ public class PacketHeader {
                         PacketType type, int length, int checksum) {
         if (sourceIP == null || destIP == null) {
             throw new IllegalArgumentException("Source or destination IP cannot be null");
+        }
+        if (!(sourceIP instanceof Inet4Address) || !(destIP instanceof Inet4Address)) {
+            throw new IllegalArgumentException("Only IPv4 addresses are supported");
         }
         if (sourcePort < 0 || sourcePort > 65535 || destPort < 0 || destPort > 65535) {
             throw new IllegalArgumentException("Invalid port: sourcePort=" + sourcePort + ", destPort=" + destPort);
@@ -45,12 +48,20 @@ public class PacketHeader {
                     ", sourcePort=" + sourcePort + ", destIP=" + destIP.getHostAddress() +
                     ", destPort=" + destPort + ", type=" + type + ", length=" + length +
                     ", checksum=" + checksum);
-            buffer.put(sourceIP.getAddress()); // 4 bytes
-            System.out.println("After sourceIP, position: " + buffer.position());
+            byte[] sourceIPBytes = sourceIP.getAddress();
+            if (sourceIPBytes.length != 4) {
+                throw new IllegalStateException("Source IP length is " + sourceIPBytes.length + ", expected 4 bytes");
+            }
+            buffer.put(sourceIPBytes); // 4 bytes
+            System.out.println("After sourceIP, position: " + buffer.position() + ", bytes: " + bytesToHex(sourceIPBytes));
             buffer.putShort((short) sourcePort); // 2 bytes
             System.out.println("After sourcePort, position: " + buffer.position());
-            buffer.put(destIP.getAddress()); // 4 bytes
-            System.out.println("After destIP, position: " + buffer.position());
+            byte[] destIPBytes = destIP.getAddress();
+            if (destIPBytes.length != 4) {
+                throw new IllegalStateException("Destination IP length is " + destIPBytes.length + ", expected 4 bytes");
+            }
+            buffer.put(destIPBytes); // 4 bytes
+            System.out.println("After destIP, position: " + buffer.position() + ", bytes: " + bytesToHex(destIPBytes));
             buffer.putShort((short) destPort); // 2 bytes
             System.out.println("After destPort, position: " + buffer.position());
             buffer.put(type.getValue()); // 1 byte
@@ -79,10 +90,16 @@ public class PacketHeader {
             byte[] srcIpBytes = new byte[4];
             buffer.get(srcIpBytes);
             InetAddress srcIP = InetAddress.getByAddress(srcIpBytes);
+            if (!(srcIP instanceof Inet4Address)) {
+                throw new IllegalArgumentException("Received non-IPv4 source address");
+            }
             int srcPort = Short.toUnsignedInt(buffer.getShort());
             byte[] dstIpBytes = new byte[4];
             buffer.get(dstIpBytes);
             InetAddress dstIP = InetAddress.getByAddress(dstIpBytes);
+            if (!(dstIP instanceof Inet4Address)) {
+                throw new IllegalArgumentException("Received non-IPv4 destination address");
+            }
             int dstPort = Short.toUnsignedInt(buffer.getShort());
             byte typeByte = buffer.get();
             PacketType type = PacketType.fromValue(typeByte);
@@ -99,6 +116,15 @@ public class PacketHeader {
             System.err.println("Error in fromBytes: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             throw e;
         }
+    }
+
+    // Helper method to convert byte array to hex string for logging
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02X ", b));
+        }
+        return sb.toString();
     }
 
     @Override

@@ -1,175 +1,198 @@
 import java.net.*;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 
-// Manages reliable connections with Go-Back-N, flow control, and congestion control
 public class ConnectionManager {
-    private static final int INITIAL_WINDOW_SIZE = 5;
-    private static final int TIMEOUT_MS = 1000;
-    private static final int MAX_WINDOW_SIZE = 10;
-    private static final int MIN_WINDOW_SIZE = 1;
-    private static final double LOSS_THRESHOLD = 0.1; // Reduce window if loss rate > 10%
-
     private final DatagramSocket socket;
     private final InetAddress remoteIP;
     private final int remotePort;
-    private int windowSize = INITIAL_WINDOW_SIZE;
-    private int nextSeqNum = 0;
-    private int base = 0;
-    private volatile boolean connected = false;
-    private volatile int advertisedWindow = INITIAL_WINDOW_SIZE; // Receiver's window
-    private int packetLossCount = 0;
-    private int packetSentCount = 0;
-
+    private int sequenceNumber = 0; // Manage sequence number here
+    private int advertisedWindow = 10; // Example window size
     private final Map<Integer, byte[]> sentPackets = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
+    private volatile boolean connected = false;
+    private volatile boolean running = true;
+    private final ScheduledExecutorService timeoutExecutor = Executors.newSingleThreadScheduledExecutor();
+    private final FragmentManager fragmentManager = new FragmentManager(); // Instance for fragmenting
 
     public ConnectionManager(DatagramSocket socket, InetAddress remoteIP, int remotePort) {
+        if (socket == null) {
+            throw new IllegalArgumentException("Socket cannot be null");
+        }
+        if (remoteIP == null) {
+            throw new IllegalArgumentException("Remote IP cannot be null");
+        }
+        if (!(remoteIP instanceof Inet4Address)) {
+            throw new IllegalArgumentException("Remote IP must be IPv4");
+        }
+        if (remotePort <= 0 || remotePort > 65535) {
+            throw new IllegalArgumentException("Invalid remote port: " + remotePort);
+        }
         this.socket = socket;
         this.remoteIP = remoteIP;
         this.remotePort = remotePort;
+        System.out.println("ConnectionManager initialized for " + remoteIP.getHostAddress() + ":" + remotePort);
     }
 
-    // Establish connection with three-way handshake
-    public void connect() throws Exception {
-        sendPacket(PacketHeader.PacketType.SYN, new byte[0], nextSeqNum);
-        sentPackets.put(nextSeqNum, new byte[0]);
-        startTimer();
-        while (!connected) {
-            Thread.sleep(100);
-        }
-    }
-
-    // Terminate connection with FIN, FIN-ACK, and ACK
-    public void disconnect() throws Exception {
-        // Ensure all data is sent before initiating teardown
-        while (base < nextSeqNum) {
-            Thread.sleep(100); // Wait for pending packets
-        }
-        sendPacket(PacketHeader.PacketType.FIN, new byte[0], nextSeqNum);
-        sentPackets.put(nextSeqNum, new byte[0]);
-        startTimer();
-        while (connected) {
-            Thread.sleep(100);
-        }
-    }
-
-    // Send data reliably with Go-Back-N
-    public void sendData(byte[] data) throws Exception {
-        FragmentManager fm = new FragmentManager();
-        List<byte[]> chunks = fm.fragment(data);
-        for (byte[] chunk : chunks) {
-            while (nextSeqNum >= base + Math.min(windowSize, advertisedWindow)) {
-                Thread.sleep(50); // Respect flow control
+    public void connect() {
+        try {
+            if (socket.isClosed()) {
+                throw new IllegalStateException("Socket is closed");
             }
-            sendPacket(PacketHeader.PacketType.FILE, chunk, nextSeqNum);
-            sentPackets.put(nextSeqNum, chunk);
-            packetSentCount++;
-            if (base == nextSeqNum) {
-                startTimer();
+            if (!(socket.getLocalAddress() instanceof Inet4Address)) {
+                throw new IllegalStateException("Local address must be IPv4");
             }
-            nextSeqNum++;
-        }
-    }
-
-    // Process received ACKs with window size
-    public void receiveAck(int seqNum, int advertisedWindow) {
-        this.advertisedWindow = advertisedWindow;
-        if (seqNum >= base) {
-            base = seqNum + 1;
-            sentPackets.entrySet().removeIf(e -> e.getKey() < base);
-            if (base == nextSeqNum) {
-                stopTimer();
-            } else {
-                startTimer();
-            }
-            // Congestion control: Increase window if no recent losses
-            if (packetSentCount > 0 && (double) packetLossCount / packetSentCount < LOSS_THRESHOLD) {
-                windowSize = Math.min(windowSize + 1, MAX_WINDOW_SIZE);
-            }
-        } else {
-            packetLossCount++;
-            // Congestion control: Reduce window on loss
-            windowSize = Math.max(windowSize / 2, MIN_WINDOW_SIZE);
-        }
-    }
-
-    // Process received packets (called by ChatNode)
-    public void processPacket(PacketHeader header, byte[] payload) throws Exception {
-        if (header.type == PacketHeader.PacketType.SYN) {
-            sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0], 0);
-        } else if (header.type == PacketHeader.PacketType.SYN_ACK) {
-            sendPacket(PacketHeader.PacketType.ACK, new byte[0], 0);
+            System.out.println("Sending SYN to " + remoteIP.getHostAddress() + ":" + remotePort);
+            sendPacket(PacketHeader.PacketType.SYN, new byte[0]);
+            // Simplified handshake: assume SYN-ACK and ACK are handled in processPacket
             connected = true;
-        } else if (header.type == PacketHeader.PacketType.ACK) {
-            receiveAck(header.length, INITIAL_WINDOW_SIZE); // Length field repurposed for seqNum
-        } else if (header.type == PacketHeader.PacketType.FIN) {
-            sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], 0);
-        } else if (header.type == PacketHeader.PacketType.FIN_ACK) {
-            sendPacket(PacketHeader.PacketType.ACK, new byte[0], 0);
-            connected = false;
+        } catch (Exception e) {
+            System.err.println("Fehler beim Verbindungsaufbau zu " + remoteIP.getHostAddress() + ":" + remotePort + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    private ScheduledFuture<?> timeoutTask;
-
-    private void startTimer() {
-        stopTimer();
-        timeoutTask = timer.schedule(() -> {
-            try {
-                packetLossCount++;
-                // Congestion control: Reduce window on timeout
-                windowSize = Math.max(windowSize / 2, MIN_WINDOW_SIZE);
-                // Go-Back-N: Resend all packets from base
-                for (int seq = base; seq < nextSeqNum; seq++) {
-                    byte[] pkt = sentPackets.get(seq);
-                    if (pkt != null) {
-                        sendPacket(PacketHeader.PacketType.FILE, pkt, seq);
-                        packetSentCount++;
-                    }
-                }
-                if (base < nextSeqNum) {
-                    startTimer();
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
+    public void sendData(byte[] data) {
+        try {
+            if (!connected) {
+                throw new IllegalStateException("Connection not established");
             }
-        }, TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    }
-
-    private void stopTimer() {
-        if (timeoutTask != null) {
-            timeoutTask.cancel(false);
+            if (socket.isClosed()) {
+                throw new IllegalStateException("Socket is closed");
+            }
+            if (data == null) {
+                throw new IllegalArgumentException("Data cannot be null");
+            }
+            System.out.println("Fragmenting data for " + remoteIP.getHostAddress() + ":" + remotePort + ", data length: " + data.length);
+            List<byte[]> fragments = fragmentManager.fragment(data); // Use instance method
+            for (byte[] fragment : fragments) {
+                if (sentPackets.size() >= advertisedWindow) {
+                    System.out.println("Window full, waiting...");
+                    Thread.sleep(100); // Simplified flow control
+                    continue;
+                }
+                int currentSeqNum = sequenceNumber++; // Increment sequence number
+                int checksum = CRC.calculate(fragment); // Use CRC.java
+                PacketHeader header = new PacketHeader(
+                        socket.getLocalAddress(), socket.getLocalPort(),
+                        remoteIP, remotePort, PacketHeader.PacketType.MESSAGE, fragment.length, checksum);
+                sentPackets.put(currentSeqNum, fragment);
+                sendPacket(PacketHeader.PacketType.MESSAGE, fragment);
+                timeoutExecutor.schedule(() -> {
+                    if (sentPackets.containsKey(currentSeqNum)) {
+                        System.out.println("Timeout for sequence " + currentSeqNum + ", retransmitting...");
+                        try {
+                            sendPacket(PacketHeader.PacketType.MESSAGE, fragment);
+                            advertisedWindow = Math.max(1, advertisedWindow / 2);
+                        } catch (Exception e) {
+                            System.err.println("Fehler bei der erneuten Übertragung: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                        }
+                    }
+                }, 1000, TimeUnit.MILLISECONDS);
+            }
+            System.out.println("All fragments sent to " + remoteIP.getHostAddress() + ":" + remotePort);
+        } catch (Exception e) {
+            System.err.println("Fehler beim Senden der Daten: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    private void sendPacket(PacketHeader.PacketType type, byte[] payload, int seqNum) throws Exception {
-        PacketHeader header = new PacketHeader(
-                socket.getLocalAddress(),
-                socket.getLocalPort(),
-                remoteIP,
-                remotePort,
-                type,
-                seqNum, // Repurpose length field for sequence number
-                CRC.calculate(payload)
-        );
-        byte[] headerBytes = header.toBytes();
-        byte[] packet = new byte[headerBytes.length + payload.length];
-        System.arraycopy(headerBytes, 0, packet, 0, headerBytes.length);
-        System.arraycopy(payload, 0, packet, headerBytes.length, payload.length);
+    private void sendPacket(PacketHeader.PacketType type, byte[] data) throws Exception {
+        try {
+            if (type == null) {
+                throw new IllegalArgumentException("Packet type cannot be null");
+            }
+            if (data == null) {
+                throw new IllegalArgumentException("Data cannot be null");
+            }
+            int checksum = CRC.calculate(data); // Use CRC.java
+            PacketHeader header = new PacketHeader(
+                    socket.getLocalAddress(), socket.getLocalPort(),
+                    remoteIP, remotePort, type, data.length, checksum);
+            byte[] headerBytes = header.toBytes();
+            if (headerBytes.length != PacketHeader.HEADER_SIZE) {
+                throw new IllegalStateException("Header size mismatch: expected " + PacketHeader.HEADER_SIZE + ", got " + headerBytes.length);
+            }
+            byte[] packetData = new byte[headerBytes.length + data.length];
+            System.arraycopy(headerBytes, 0, packetData, 0, headerBytes.length);
+            System.arraycopy(data, 0, packetData, headerBytes.length, data.length);
+            DatagramPacket packet = new DatagramPacket(packetData, packetData.length, remoteIP, remotePort);
+            socket.send(packet);
+            System.out.println("Sent packet type " + type + " to " + remoteIP.getHostAddress() + ":" + remotePort + ", header size: " + headerBytes.length);
+        } catch (Exception e) {
+            System.err.println("Fehler beim Senden des Pakets (type: " + type + "): " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            throw e;
+        }
+    }
 
-        DatagramPacket dp = new DatagramPacket(packet, packet.length, remoteIP, remotePort);
-        socket.send(dp);
+    public void processPacket(PacketHeader header, byte[] payload) {
+        try {
+            if (header == null || payload == null) {
+                throw new IllegalArgumentException("Header or payload cannot be null");
+            }
+            if (header.type == PacketHeader.PacketType.SYN) {
+                System.out.println("Received SYN, sending SYN-ACK");
+                sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0]);
+                connected = true;
+            } else if (header.type == PacketHeader.PacketType.SYN_ACK) {
+                System.out.println("Received SYN-ACK, sending ACK");
+                sendPacket(PacketHeader.PacketType.ACK, new byte[0]);
+                connected = true;
+            } else if (header.type == PacketHeader.PacketType.ACK) {
+                System.out.println("Received ACK for sequence number");
+                // Assume sequence number is in payload as 4-byte integer
+                if (payload.length >= 4) {
+                    ByteBuffer buffer = ByteBuffer.wrap(payload);
+                    int seqNum = buffer.getInt();
+                    sentPackets.remove(seqNum);
+                    advertisedWindow++;
+                }
+            } else if (header.type == PacketHeader.PacketType.FIN) {
+                System.out.println("Received FIN, sending FIN-ACK");
+                sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0]);
+                connected = false;
+            } else if (header.type == PacketHeader.PacketType.FIN_ACK) {
+                System.out.println("Received FIN-ACK, sending ACK");
+                sendPacket(PacketHeader.PacketType.ACK, new byte[0]);
+                connected = false;
+            } else if (header.type == PacketHeader.PacketType.MESSAGE) {
+                // Forward to FragmentManager for reassembly
+                byte[] assembled = fragmentManager.processChunk(payload, header.checksum);
+                if (assembled != null) {
+                    System.out.println("Assembled data received: " + new String(assembled, "UTF-8"));
+                    // Send ACK with sequence number (using checksum as proxy)
+                    ByteBuffer ackPayload = ByteBuffer.allocate(4);
+                    ackPayload.putInt(header.checksum);
+                    sendPacket(PacketHeader.PacketType.ACK, ackPayload.array());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Fehler beim Verarbeiten des Pakets: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public void disconnect() {
+        try {
+            if (connected) {
+                System.out.println("Sending FIN to " + remoteIP.getHostAddress() + ":" + remotePort);
+                sendPacket(PacketHeader.PacketType.FIN, new byte[0]);
+                connected = false;
+            }
+        } catch (Exception e) {
+            System.err.println("Fehler beim Trennen der Verbindung: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
     }
 
     public void shutdown() {
-        timer.shutdown();
+        running = false;
+        timeoutExecutor.shutdown();
         try {
-            if (!timer.awaitTermination(10, TimeUnit.SECONDS)) {
-                timer.shutdownNow();
+            if (!timeoutExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                timeoutExecutor.shutdownNow();
             }
         } catch (InterruptedException e) {
-            timer.shutdownNow();
+            timeoutExecutor.shutdownNow();
         }
     }
 }
