@@ -230,12 +230,16 @@ public class ChatNode {
     public void printRoutingTable() {
         System.out.println("\nAktuelle Routing-Tabelle:");
         for (RoutingEntry entry : routingTable.values()) {
-            System.out.printf("Ziel: %s:%d, NextHop: %s:%d, HopCount: %d\n",
-                    entry.destIP.getHostAddress(),
-                    entry.destPort,
-                    entry.nextHopIP.getHostAddress(),
-                    entry.nextHopPort,
-                    entry.hopCount);
+            if (entry.hopCount < 16)
+            {
+                System.out.printf("Ziel: %s:%d, NextHop: %s:%d, HopCount: %d\n",
+                        entry.destIP.getHostAddress(),
+                        entry.destPort,
+                        entry.nextHopIP.getHostAddress(),
+                        entry.nextHopPort,
+                        entry.hopCount);
+            }
+
         }
     }
 
