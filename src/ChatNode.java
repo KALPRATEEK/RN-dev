@@ -1,4 +1,3 @@
-
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -393,14 +392,14 @@ public class ChatNode {
                             }
                         } else {
                             // Forward to next hop
-                            String targetKey = header.destIP.getHostAddress() + ":" + header.destPort;
+                            String targetKey = header.destIP.getHostAddress() + ":" + (header.destPort - 1); // Use routing port
                             RoutingEntry nextHop = routingTable.get(targetKey);
                             if (nextHop != null) {
                                 DatagramPacket forwardPacket = new DatagramPacket(
                                         packet.getData(), packet.getLength(),
-                                        nextHop.nextHopIP, nextHop.nextHopPort);
+                                        nextHop.nextHopIP, nextHop.nextHopPort + 1); // Forward to next hop's data port
                                 dataSocket.send(forwardPacket);
-                                System.out.println("Forwarded packet to " + nextHop.nextHopIP + ":" + nextHop.nextHopPort);
+                                System.out.println("Forwarded packet to " + nextHop.nextHopIP + ":" + (nextHop.nextHopPort + 1));
                             } else {
                                 System.out.println("No route to " + targetKey);
                             }
@@ -426,8 +425,8 @@ public class ChatNode {
     public void sendMessage(String ipStr, int port, byte[] data) {
         try {
             InetAddress destIP = InetAddress.getByName(ipStr);
-            int destDataPort = port + 1;
-            String targetKey = destIP.getHostAddress() + ":" + destDataPort;
+            int destDataPort = port + 1; // Destination data port (n+1)
+            String targetKey = destIP.getHostAddress() + ":" + port; // Use routing port (n) for routing table lookup
 
             // Check routing table for next hop
             RoutingEntry nextHop = routingTable.get(targetKey);
@@ -436,25 +435,36 @@ public class ChatNode {
                 return;
             }
 
-            // Establish connection if not already established
-            InetSocketAddress nextHopAddr = new InetSocketAddress(nextHop.nextHopIP, nextHop.nextHopPort);
+            // Establish connection to next hop's data port
+            InetSocketAddress nextHopAddr = new InetSocketAddress(nextHop.nextHopIP, nextHop.nextHopPort + 1);
             ConnectionManager cm = connections.computeIfAbsent(nextHopAddr,
-                    k -> new ConnectionManager(dataSocket, nextHop.nextHopIP, nextHop.nextHopPort));
-            if (!establishedConnections.contains(nextHop.nextHopIP.getHostAddress() + ":" + nextHop.nextHopPort)) {
+                    k -> new ConnectionManager(dataSocket, nextHop.nextHopIP, nextHop.nextHopPort + 1));
+            if (!establishedConnections.contains(nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1))) {
                 cm.connect();
+                establishedConnections.add(nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1));
             }
 
             // Determine packet type based on data content
-            PacketHeader.PacketType packetType = (data.length > 0 && new String(data, "UTF-8").equals(new String(data))) ?
+            PacketHeader.PacketType packetType = (data.length > 0 && isValidUTF8(data)) ?
                     PacketHeader.PacketType.MESSAGE : PacketHeader.PacketType.FILE;
 
             // Send data
             cm.sendData(data);
 
             System.out.println((packetType == PacketHeader.PacketType.MESSAGE ? "Nachricht" : "Datei") +
-                    " gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP + ":" + nextHop.nextHopPort);
+                    " gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP + ":" + (nextHop.nextHopPort + 1));
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Daten: " + e.getMessage());
+        }
+    }
+
+    // Helper method to check if data is valid UTF-8 (for message vs. file distinction)
+    private boolean isValidUTF8(byte[] data) {
+        try {
+            new String(data, "UTF-8");
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -471,11 +481,13 @@ public class ChatNode {
     public void initiateConnection(String ipStr, int port) {
         try {
             InetAddress ip = InetAddress.getByName(ipStr);
-            InetSocketAddress dest = new InetSocketAddress(ip, port + 1);
+            int destDataPort = port + 1;
+            InetSocketAddress dest = new InetSocketAddress(ip, destDataPort);
             ConnectionManager cm = connections.computeIfAbsent(dest,
-                    k -> new ConnectionManager(dataSocket, ip, port + 1));
+                    k -> new ConnectionManager(dataSocket, ip, destDataPort));
             cm.connect();
-            System.out.println("Verbindungsaufbau initiiert mit " + ipStr + ":" + (port + 1));
+            establishedConnections.add(ip.getHostAddress() + ":" + destDataPort);
+            System.out.println("Verbindungsaufbau initiiert mit " + ipStr + ":" + destDataPort);
         } catch (Exception e) {
             System.out.println("Fehler beim Verbindungsaufbau: " + e.getMessage());
         }
