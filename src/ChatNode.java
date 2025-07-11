@@ -6,6 +6,8 @@ import java.util.concurrent.*;
 public class ChatNode {
     private final Map<String, RoutingEntry> routingTable = new ConcurrentHashMap<>();
     private final Set<InetSocketAddress> directNeighbors = ConcurrentHashMap.newKeySet();
+    private final Map<InetSocketAddress, ScheduledFuture<?>> neighborTimers = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService timerExecutor = Executors.newSingleThreadScheduledExecutor();
 
     private final DatagramSocket routingSocket;
     private final DatagramSocket dataSocket;
@@ -56,15 +58,36 @@ public class ChatNode {
             routingTable.put(key, new RoutingEntry(ip, port, ip, port, 1));
             System.out.println("Nachbar hinzugefügt: " + key);
 
+            // Start 30-second timer for this neighbor
+            startNeighborTimer(neighbor);
+
+            // Send single-entry routing update
             sendRoutingEntryToSpecificNeighbor(neighbor);
-            for (InetSocketAddress other : directNeighbors) {
-                if (!other.equals(neighbor)) {
-                    sendRoutingTableToSpecificNeighbor(other);
-                }
-            }
         } catch (Exception e) {
             System.out.println("Fehler beim Verbinden des Nachbarn: " + e.getMessage());
         }
+    }
+
+    private void startNeighborTimer(InetSocketAddress neighbor) {
+        // Cancel existing timer if it exists
+        ScheduledFuture<?> existingTimer = neighborTimers.remove(neighbor);
+        if (existingTimer != null) {
+            existingTimer.cancel(false);
+        }
+
+        // Start new 30-second timer
+        ScheduledFuture<?> timer = timerExecutor.schedule(() -> {
+            String key = neighbor.getAddress().getHostAddress() + ":" + neighbor.getPort();
+            RoutingEntry entry = routingTable.get(key);
+            if (entry != null) {
+                entry.hopCount = 16;
+                System.out.println("Timer abgelaufen für Nachbar: " + neighbor + ", HopCount auf 16 gesetzt");
+                directNeighbors.remove(neighbor);
+                neighborTimers.remove(neighbor);
+                sendRoutingTableToNeighbors();
+            }
+        }, 30, TimeUnit.SECONDS);
+        neighborTimers.put(neighbor, timer);
     }
 
     private void sendRoutingEntryToSpecificNeighbor(InetSocketAddress neighbor) {
@@ -78,22 +101,19 @@ public class ChatNode {
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
 
-   System.out.println("Sending packet to: " + neighbor);
-System.out.println("Packet length: " + packetData.length);
+            System.out.println("Sending packet to: " + neighbor);
+            System.out.println("Packet length: " + packetData.length);
 
-// Print all bytes in decimal
-System.out.print("Packet data (decimal): [");
-for (int i = 0; i < packetData.length; i++) {
-    System.out.print(Byte.toUnsignedInt(packetData[i]));
-    if (i < packetData.length - 1) {
-        System.out.print(", ");
-    }
-}
-System.out.println("]");
+            // Print all bytes in decimal
+            System.out.print("Packet data (decimal): [");
+            for (int i = 0; i < packetData.length; i++) {
+                System.out.print(Byte.toUnsignedInt(packetData[i]));
+                if (i < packetData.length - 1) {
+                    System.out.print(", ");
+                }
+            }
+            System.out.println("]");
 
-            
-            
-            
             routingSocket.send(packet);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
@@ -117,33 +137,34 @@ System.out.println("]");
     }
 
     private byte[] encodeMyRoutingEntry() throws Exception {
-            Collection<RoutingEntry> entries = new ArrayList<RoutingEntry>();
-            String key = myIP.getHostAddress() + ":" + routingPort;
-            entries.add(routingTable.get(key));
-            ByteBuffer buffer = ByteBuffer.allocate(16);
+        Collection<RoutingEntry> entries = new ArrayList<RoutingEntry>();
+        String key = myIP.getHostAddress() + ":" + routingPort;
+        entries.add(routingTable.get(key));
+        ByteBuffer buffer = ByteBuffer.allocate(16);
 
-            for (RoutingEntry entry: entries)
-            {
-                if(entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0)
-                {
-                    continue;
-                }
-                else
-                {
-                    buffer.put(entry.destIP.getAddress());
-                    buffer.putShort((short) entry.destPort);
-                    buffer.put(entry.nextHopIP.getAddress());
-                    buffer.putShort((short) entry.nextHopPort);
-                    buffer.put((byte) entry.hopCount);
-                    buffer.put(new byte[3]);
-                }
+        for (RoutingEntry entry: entries) {
+            if(entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0) {
+                continue;
+            } else {
+                buffer.put(entry.destIP.getAddress());
+                buffer.putShort((short) entry.destPort);
+                buffer.put(entry.nextHopIP.getAddress());
+                buffer.putShort((short) entry.nextHopPort);
+                buffer.put((byte) entry.hopCount);
+                buffer.put(new byte[3]);
             }
+        }
 
-            return buffer.array();
+        return buffer.array();
     }
 
-
     public void disconnectNeighbor(InetSocketAddress neighbor) throws Exception {
+        // Cancel timer for this neighbor
+        ScheduledFuture<?> timer = neighborTimers.remove(neighbor);
+        if (timer != null) {
+            timer.cancel(false);
+        }
+
         // Sende ein Poisoned Update an den Nachbarn
         sendPoisonedUpdate(neighbor);
 
@@ -169,7 +190,7 @@ System.out.println("]");
                 routingTableChanged = true;
             }
 
-            // Sende aktualisierte Routing-Tabelle an verbleibende Nachbarn
+            // Sende Poisoned Update mit hop count 16
             if (routingTableChanged) {
                 sendRoutingTableToNeighbors();
             }
@@ -220,9 +241,13 @@ System.out.println("]");
 
     public void shutdown() {
         running = false;
+        // Cancel all neighbor timers
+        neighborTimers.values().forEach(timer -> timer.cancel(false));
+        timerExecutor.shutdown();
         routingSocket.close();
         dataSocket.close();
         System.out.println("Node wurde heruntergefahren.");
+        System.exit(0);
     }
 
     private void startRoutingReceiver() {
@@ -256,6 +281,18 @@ System.out.println("]");
         int tableLength = Short.toUnsignedInt(buffer.getShort());
 
         InetSocketAddress sender = new InetSocketAddress(srcIP, srcPort);
+
+        // Check if sender is in routingTable but not in directNeighbors
+        String senderKey = srcIP.getHostAddress() + ":" + srcPort;
+        if (routingTable.containsKey(senderKey) && !directNeighbors.contains(sender)) {
+            System.out.println("Update von nicht-direktem Nachbarn " + sender + " verworfen");
+            return;
+        }
+
+        // Reset timer for this neighbor if it exists
+        if (directNeighbors.contains(sender)) {
+            startNeighborTimer(sender);
+        }
 
         if (length < 14 + tableLength) return;
 
@@ -322,10 +359,15 @@ System.out.println("]");
             }
         }
 
-        // Behandle Poisoned Update
-        if (isPoisonedUpdate) {
+        // Behandle Poisoned Update oder neuer Nachbar
+        if (isPoisonedUpdate && entriesCount == 1) {
             if (directNeighbors.remove(sender)) {
                 System.out.println("Nachbar entfernt: " + sender);
+                // Cancel timer for this neighbor
+                ScheduledFuture<?> timer = neighborTimers.remove(sender);
+                if (timer != null) {
+                    timer.cancel(false);
+                }
                 // Entferne alle Routen, die über diesen Nachbarn gingen
                 Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
                 while (iter.hasNext()) {
@@ -337,9 +379,12 @@ System.out.println("]");
                     }
                 }
             }
-        } else if (!directNeighbors.contains(sender)) {
+        } else if (!directNeighbors.contains(sender) && entriesCount == 1) {
             directNeighbors.add(sender);
             System.out.println("Neuer Nachbar hinzugefügt: " + sender);
+            // Start timer for new neighbor
+            startNeighborTimer(sender);
+            routingTableChanged = true;
         }
 
         // Entferne Routen, die nicht mehr beworben werden
@@ -418,7 +463,6 @@ System.out.println("]");
         }
     }
 
-
     public enum PacketType {
         FILE((byte) 0),
         MESSAGE((byte) 1),
@@ -472,8 +516,7 @@ System.out.println("]");
         int entrySize = 16;
         ByteBuffer buffer = ByteBuffer.allocate(entries.size() * entrySize);
 
-
-     for (RoutingEntry entry : entries) {
+        for (RoutingEntry entry : entries) {
             buffer.put(entry.destIP.getAddress());
             buffer.putShort((short) entry.destPort);
             buffer.put(entry.nextHopIP.getAddress());
