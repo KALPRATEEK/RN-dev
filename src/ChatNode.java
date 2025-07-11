@@ -307,7 +307,7 @@ System.out.println("]");
                     routingTable.put(key, new RoutingEntry(destEntryIP, destEntryPort, srcIP, srcPort, newHopCount));
                     routingTableChanged = true;
                 } else if (currentEntry != null) {
-                    if (newHopCount < currentEntry.hopCount) {
+                    if (newHopCount < currentEntry.hopCount && currentEntry.hopCount != 16) {
                         currentEntry.hopCount = newHopCount;
                         currentEntry.nextHopIP = srcIP;
                         currentEntry.nextHopPort = srcPort;
