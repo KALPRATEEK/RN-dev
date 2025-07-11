@@ -1,12 +1,14 @@
-// ConnectionManager.java
-
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 
 public class ConnectionManager {
-    private static final int WINDOW_SIZE = 5; // Go-Back-N Fenstergröße
+    private static int WINDOW_SIZE = 5; // Initial Go-Back-N window size
+    private static final int MIN_WINDOW_SIZE = 1;
+    private static final int MAX_WINDOW_SIZE = 10;
     private static final int TIMEOUT_MS = 1000;
+    private static final double PACKET_LOSS_THRESHOLD = 0.2; // 20% loss triggers window reduction
+    private static final int LOSS_CALCULATION_INTERVAL = 10; // Calculate loss every 10 packets
 
     private final DatagramSocket socket;
     private final InetAddress remoteIP;
@@ -14,6 +16,8 @@ public class ConnectionManager {
 
     private int nextSeqNum = 0;
     private int base = 0;
+    private int packetsSent = 0;
+    private int packetsLost = 0;
 
     private final Map<Integer, byte[]> sentPackets = new ConcurrentHashMap<>();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
@@ -26,27 +30,22 @@ public class ConnectionManager {
         this.remotePort = remotePort;
     }
 
-    // Verbindungsaufbau mit SYN und SYN_ACK
     public void connect() throws Exception {
         sendPacket(PacketHeader.PacketType.SYN, new byte[0]);
         while (!connected) {
-            // Warte auf SYN_ACK
             Thread.sleep(100);
         }
     }
 
-    // Verbindung beenden mit FIN und FIN_ACK
     public void disconnect() throws Exception {
         sendPacket(PacketHeader.PacketType.FIN, new byte[0]);
         while (connected) {
-            // Warte auf FIN_ACK
             Thread.sleep(100);
         }
     }
 
-    // Sende Daten zuverlässig mit Go-Back-N
     public void sendData(byte[] data) throws Exception {
-        int chunkSize = 900; // Beispielgröße, um MTU zu beachten
+        int chunkSize = 900;
         int totalChunks = (data.length + chunkSize - 1) / chunkSize;
 
         for (int i = 0; i < totalChunks; i++) {
@@ -59,16 +58,19 @@ public class ConnectionManager {
                 startTimer();
             }
             nextSeqNum++;
-            // Fenstergröße beachten
+            packetsSent++;
             while (nextSeqNum >= base + WINDOW_SIZE) {
                 Thread.sleep(50);
             }
+            updateWindowSize(); // Adjust window size based on packet loss
         }
     }
 
-    // Empfangene ACKs verarbeiten
     public void receiveAck(int ackNum) {
         if (ackNum >= base) {
+            for (int i = base; i <= ackNum; i++) {
+                sentPackets.remove(i);
+            }
             base = ackNum + 1;
             if (base == nextSeqNum) {
                 stopTimer();
@@ -78,19 +80,35 @@ public class ConnectionManager {
         }
     }
 
+    private void updateWindowSize() {
+        if (packetsSent >= LOSS_CALCULATION_INTERVAL) {
+            double lossRate = (double) packetsLost / packetsSent;
+            if (lossRate > PACKET_LOSS_THRESHOLD && WINDOW_SIZE > MIN_WINDOW_SIZE) {
+                WINDOW_SIZE = Math.max(MIN_WINDOW_SIZE, WINDOW_SIZE / 2);
+                System.out.println("Packet loss detected, reducing window size to: " + WINDOW_SIZE);
+            } else if (lossRate < PACKET_LOSS_THRESHOLD / 2 && WINDOW_SIZE < MAX_WINDOW_SIZE) {
+                WINDOW_SIZE = Math.min(MAX_WINDOW_SIZE, WINDOW_SIZE + 1);
+                System.out.println("Stable connection, increasing window size to: " + WINDOW_SIZE);
+            }
+            packetsSent = 0;
+            packetsLost = 0;
+        }
+    }
+
     private ScheduledFuture<?> timeoutTask;
 
     private void startTimer() {
         stopTimer();
         timeoutTask = timer.schedule(() -> {
             try {
-                // Go-Back-N: Alle Pakete ab base neu senden
+                packetsLost += nextSeqNum - base;
                 for (int seq = base; seq < nextSeqNum; seq++) {
                     byte[] pkt = sentPackets.get(seq);
                     if (pkt != null) {
                         sendPacket(PacketHeader.PacketType.FILE, pkt);
                     }
                 }
+                updateWindowSize();
                 startTimer();
             } catch (Exception e) {
                 e.printStackTrace();
@@ -105,7 +123,6 @@ public class ConnectionManager {
     }
 
     private void sendPacket(PacketHeader.PacketType type, byte[] payload) throws Exception {
-        // Header erzeugen und senden (vereinfachte Version)
         PacketHeader header = new PacketHeader(
                 socket.getLocalAddress(),
                 socket.getLocalPort(),

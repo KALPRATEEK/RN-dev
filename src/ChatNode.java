@@ -7,6 +7,7 @@ public class ChatNode {
     private final Map<String, RoutingEntry> routingTable = new ConcurrentHashMap<>();
     private final Set<InetSocketAddress> directNeighbors = ConcurrentHashMap.newKeySet();
     private final Map<InetSocketAddress, ScheduledFuture<?>> neighborTimers = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledFuture<?>> infinityTimers = new ConcurrentHashMap<>(); // New: For 90-second infinity timer
     private final ScheduledExecutorService timerExecutor = Executors.newSingleThreadScheduledExecutor();
 
     private final DatagramSocket routingSocket;
@@ -34,7 +35,7 @@ public class ChatNode {
 
     private void startPeriodicRoutingUpdates() {
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
-            sendRoutingTableToNeighbors();
+            sendRoutingTableToNeighbors(null); // No excluded neighbor for periodic updates
         }, 0, 10, TimeUnit.SECONDS);
     }
 
@@ -58,10 +59,7 @@ public class ChatNode {
             routingTable.put(key, new RoutingEntry(ip, port, ip, port, 1));
             System.out.println("Nachbar hinzugefügt: " + key);
 
-            // Start 30-second timer for this neighbor
             startNeighborTimer(neighbor);
-
-            // Send single-entry routing update
             sendRoutingEntryToSpecificNeighbor(neighbor);
         } catch (Exception e) {
             System.out.println("Fehler beim Verbinden des Nachbarn: " + e.getMessage());
@@ -69,13 +67,11 @@ public class ChatNode {
     }
 
     private void startNeighborTimer(InetSocketAddress neighbor) {
-        // Cancel existing timer if it exists
         ScheduledFuture<?> existingTimer = neighborTimers.remove(neighbor);
         if (existingTimer != null) {
             existingTimer.cancel(false);
         }
 
-        // Start new 30-second timer
         ScheduledFuture<?> timer = timerExecutor.schedule(() -> {
             String key = neighbor.getAddress().getHostAddress() + ":" + neighbor.getPort();
             RoutingEntry entry = routingTable.get(key);
@@ -84,10 +80,26 @@ public class ChatNode {
                 System.out.println("Timer abgelaufen für Nachbar: " + neighbor + ", HopCount auf 16 gesetzt");
                 directNeighbors.remove(neighbor);
                 neighborTimers.remove(neighbor);
-                sendRoutingTableToNeighbors();
+                startInfinityTimer(key); // Start 90-second timer for infinity entry
+                sendRoutingTableToNeighbors(null);
             }
         }, 30, TimeUnit.SECONDS);
         neighborTimers.put(neighbor, timer);
+    }
+
+    private void startInfinityTimer(String key) {
+        ScheduledFuture<?> existingTimer = infinityTimers.remove(key);
+        if (existingTimer != null) {
+            existingTimer.cancel(false);
+        }
+
+        ScheduledFuture<?> timer = timerExecutor.schedule(() -> {
+            routingTable.remove(key);
+            infinityTimers.remove(key);
+            System.out.println("Infinity-Eintrag entfernt: " + key);
+            sendRoutingTableToNeighbors(null);
+        }, 90, TimeUnit.SECONDS);
+        infinityTimers.put(key, timer);
     }
 
     private void sendRoutingEntryToSpecificNeighbor(InetSocketAddress neighbor) {
@@ -100,11 +112,8 @@ public class ChatNode {
             System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
-
             System.out.println("Sending packet to: " + neighbor);
             System.out.println("Packet length: " + packetData.length);
-
-            // Print all bytes in decimal
             System.out.print("Packet data (decimal): [");
             for (int i = 0; i < packetData.length; i++) {
                 System.out.print(Byte.toUnsignedInt(packetData[i]));
@@ -137,13 +146,13 @@ public class ChatNode {
     }
 
     private byte[] encodeMyRoutingEntry() throws Exception {
-        Collection<RoutingEntry> entries = new ArrayList<RoutingEntry>();
+        Collection<RoutingEntry> entries = new ArrayList<>();
         String key = myIP.getHostAddress() + ":" + routingPort;
         entries.add(routingTable.get(key));
         ByteBuffer buffer = ByteBuffer.allocate(16);
 
-        for (RoutingEntry entry: entries) {
-            if(entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0) {
+        for (RoutingEntry entry : entries) {
+            if (entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0) {
                 continue;
             } else {
                 buffer.put(entry.destIP.getAddress());
@@ -159,20 +168,16 @@ public class ChatNode {
     }
 
     public void disconnectNeighbor(InetSocketAddress neighbor) throws Exception {
-        // Cancel timer for this neighbor
         ScheduledFuture<?> timer = neighborTimers.remove(neighbor);
         if (timer != null) {
             timer.cancel(false);
         }
 
-        // Sende ein Poisoned Update an den Nachbarn
         sendPoisonedUpdate(neighbor);
 
-        // Entferne den Nachbarn aus der Liste der direkten Nachbarn
         if (directNeighbors.remove(neighbor)) {
             System.out.println("Nachbar entfernt: " + neighbor);
 
-            // Entferne alle Routen aus der Routing-Tabelle, die über diesen Nachbarn gingen
             Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
             boolean routingTableChanged = false;
             while (iter.hasNext()) {
@@ -184,15 +189,13 @@ public class ChatNode {
                 }
             }
 
-            // Entferne den direkten Eintrag für den Nachbarn selbst, falls vorhanden
             String neighborKey = neighbor.getAddress().getHostAddress() + ":" + neighbor.getPort();
             if (routingTable.remove(neighborKey) != null) {
                 routingTableChanged = true;
             }
 
-            // Sende Poisoned Update mit hop count 16
             if (routingTableChanged) {
-                sendRoutingTableToNeighbors();
+                sendRoutingTableToNeighbors(null);
             }
         }
     }
@@ -230,8 +233,7 @@ public class ChatNode {
     public void printRoutingTable() {
         System.out.println("\nAktuelle Routing-Tabelle:");
         for (RoutingEntry entry : routingTable.values()) {
-            if (entry.hopCount < 16)
-            {
+            if (entry.hopCount < 16) {
                 System.out.printf("Ziel: %s:%d, NextHop: %s:%d, HopCount: %d\n",
                         entry.destIP.getHostAddress(),
                         entry.destPort,
@@ -239,14 +241,13 @@ public class ChatNode {
                         entry.nextHopPort,
                         entry.hopCount);
             }
-
         }
     }
 
     public void shutdown() {
         running = false;
-        // Cancel all neighbor timers
         neighborTimers.values().forEach(timer -> timer.cancel(false));
+        infinityTimers.values().forEach(timer -> timer.cancel(false));
         timerExecutor.shutdown();
         routingSocket.close();
         dataSocket.close();
@@ -261,13 +262,13 @@ public class ChatNode {
                 try {
                     DatagramPacket packet = new DatagramPacket(buf, buf.length);
                     routingSocket.receive(packet);
-                    processRoutingUpdate(packet.getData(), packet.getLength());
+                    processRoutingUpdate(packet.getData(), packet.getLength(), new InetSocketAddress(packet.getAddress(), packet.getPort()));
                 } catch (Exception ignored) {}
             }
         }).start();
     }
 
-    private void processRoutingUpdate(byte[] data, int length) throws Exception {
+    private void processRoutingUpdate(byte[] data, int length, InetSocketAddress sender) throws Exception {
         if (length < 14) return;
 
         ByteBuffer buffer = ByteBuffer.wrap(data, 0, length);
@@ -284,28 +285,23 @@ public class ChatNode {
 
         int tableLength = Short.toUnsignedInt(buffer.getShort());
 
-        InetSocketAddress sender = new InetSocketAddress(srcIP, srcPort);
+        if (length < 14 + tableLength) return;
 
-        // Check if sender is in routingTable but not in directNeighbors
         String senderKey = srcIP.getHostAddress() + ":" + srcPort;
         if (routingTable.containsKey(senderKey) && !directNeighbors.contains(sender)) {
             System.out.println("Update von nicht-direktem Nachbarn " + sender + " verworfen");
             return;
         }
 
-        // Reset timer for this neighbor if it exists
         if (directNeighbors.contains(sender)) {
             startNeighborTimer(sender);
         }
-
-        if (length < 14 + tableLength) return;
 
         int entriesCount = tableLength / 16;
         Set<String> advertisedDestinations = new HashSet<>();
         boolean isPoisonedUpdate = false;
         boolean routingTableChanged = false;
 
-        // Verarbeite alle Einträge im Update
         for (int i = 0; i < entriesCount; i++) {
             byte[] entryBytes = new byte[16];
             buffer.get(entryBytes);
@@ -327,10 +323,14 @@ public class ChatNode {
             entryBuffer.get(nullBytes);
             if (!(nullBytes[0] == 0 && nullBytes[1] == 0 && nullBytes[2] == 0)) return;
 
+            // Split Horizon: Ignore entry if next hop is this node
+            if (nextHopIP.equals(myIP) && nextHopPort == routingPort) {
+                continue;
+            }
+
             String key = destEntryIP.getHostAddress() + ":" + destEntryPort;
             advertisedDestinations.add(key);
 
-            // Prüfe, ob dies ein Poisoned Update für den Sender selbst ist
             if (destEntryIP.equals(srcIP) && destEntryPort == srcPort && hopCount == 16) {
                 isPoisonedUpdate = true;
             }
@@ -340,6 +340,7 @@ public class ChatNode {
             if (hopCount == 16) {
                 if (currentEntry != null && currentEntry.nextHopIP.equals(srcIP) && currentEntry.nextHopPort == srcPort) {
                     routingTable.remove(key);
+                    startInfinityTimer(key); // Start 90-second timer for infinity entry
                     routingTableChanged = true;
                 }
             } else {
@@ -363,22 +364,20 @@ public class ChatNode {
             }
         }
 
-        // Behandle Poisoned Update oder neuer Nachbar
         if (isPoisonedUpdate && entriesCount == 1) {
             if (directNeighbors.remove(sender)) {
                 System.out.println("Nachbar entfernt: " + sender);
-                // Cancel timer for this neighbor
                 ScheduledFuture<?> timer = neighborTimers.remove(sender);
                 if (timer != null) {
                     timer.cancel(false);
                 }
-                // Entferne alle Routen, die über diesen Nachbarn gingen
                 Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
                 while (iter.hasNext()) {
                     Map.Entry<String, RoutingEntry> entry = iter.next();
                     RoutingEntry re = entry.getValue();
                     if (re.nextHopIP.equals(srcIP) && re.nextHopPort == srcPort) {
                         iter.remove();
+                        startInfinityTimer(entry.getKey());
                         routingTableChanged = true;
                     }
                 }
@@ -386,12 +385,10 @@ public class ChatNode {
         } else if (!directNeighbors.contains(sender) && entriesCount == 1) {
             directNeighbors.add(sender);
             System.out.println("Neuer Nachbar hinzugefügt: " + sender);
-            // Start timer for new neighbor
             startNeighborTimer(sender);
             routingTableChanged = true;
         }
 
-        // Entferne Routen, die nicht mehr beworben werden
         Iterator<Map.Entry<String, RoutingEntry>> iter = routingTable.entrySet().iterator();
         while (iter.hasNext()) {
             Map.Entry<String, RoutingEntry> entry = iter.next();
@@ -399,12 +396,13 @@ public class ChatNode {
             RoutingEntry re = entry.getValue();
             if (re.nextHopIP.equals(srcIP) && re.nextHopPort == srcPort && !advertisedDestinations.contains(key)) {
                 iter.remove();
+                startInfinityTimer(key);
                 routingTableChanged = true;
             }
         }
 
         if (routingTableChanged) {
-            sendRoutingTableToNeighbors();
+            sendRoutingTableToNeighbors(sender); // Exclude sender from triggered update
         }
     }
 
@@ -418,13 +416,22 @@ public class ChatNode {
                     ByteBuffer buffer = ByteBuffer.wrap(packet.getData(), 0, packet.getLength());
 
                     byte type = buffer.get();
+                    String key = packet.getAddress().getHostAddress() + ":" + packet.getPort();
+
                     if (type == PacketType.SYN.getValue()) {
                         sendPacket(PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        System.out.println("SYN empfangen von " + key + ", SYN-ACK gesendet");
                     } else if (type == PacketType.SYN_ACK.getValue()) {
-                        String key = packet.getAddress().getHostAddress() + ":" + packet.getPort();
                         establishedConnections.add(key);
                         System.out.println("Verbindung hergestellt mit " + key);
-                    } else {
+                    } else if (type == PacketType.FIN.getValue()) {
+                        sendPacket(PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        establishedConnections.remove(key);
+                        System.out.println("FIN empfangen von " + key + ", FIN-ACK gesendet, Verbindung geschlossen");
+                    } else if (type == PacketType.FIN_ACK.getValue()) {
+                        establishedConnections.remove(key);
+                        System.out.println("FIN-ACK empfangen von " + key + ", Verbindung geschlossen");
+                    } else if (type == PacketType.MESSAGE.getValue()) {
                         byte[] msgBytes = new byte[buffer.remaining()];
                         buffer.get(msgBytes);
                         String msg = new String(msgBytes, "UTF-8");
@@ -453,7 +460,6 @@ public class ChatNode {
             byte typeByte = PacketType.MESSAGE.getValue();
             byte[] messageBytes = message.getBytes("UTF-8");
 
-            // Create byte array with 1 extra byte for the type
             byte[] packetBytes = new byte[1 + messageBytes.length];
             packetBytes[0] = typeByte;
             System.arraycopy(messageBytes, 0, packetBytes, 1, messageBytes.length);
@@ -497,9 +503,12 @@ public class ChatNode {
         }
     }
 
-    private void sendRoutingTableToNeighbors() {
+    private void sendRoutingTableToNeighbors(InetSocketAddress excludeNeighbor) {
         try {
             for (InetSocketAddress neighbor : directNeighbors) {
+                if (excludeNeighbor != null && neighbor.equals(excludeNeighbor)) {
+                    continue; // Skip the neighbor that triggered the update
+                }
                 byte[] tableBytes = encodeRoutingTable();
                 byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
 
