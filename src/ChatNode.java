@@ -1,3 +1,4 @@
+
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -184,9 +185,9 @@ public class ChatNode {
         System.out.println("\nAktuelle Routing-Tabelle:");
         for (RoutingEntry entry : routingTable.values()) {
             System.out.printf("Ziel: %s:%d, NextHop: %s:%d, HopCount: %d\n",
-                    entry.destIP.getHostAddress(),
+                    entry.destIP != null ? entry.destIP.getHostAddress() : "null",
                     entry.destPort,
-                    entry.nextHopIP.getHostAddress(),
+                    entry.nextHopIP != null ? entry.nextHopIP.getHostAddress() : "null",
                     entry.nextHopPort,
                     entry.hopCount);
         }
@@ -219,11 +220,23 @@ public class ChatNode {
         ByteBuffer buffer = ByteBuffer.wrap(data, 0, length);
         byte[] srcIPBytes = new byte[4];
         buffer.get(srcIPBytes);
-        InetAddress srcIP = InetAddress.getByAddress(srcIPBytes);
+        InetAddress srcIP;
+        try {
+            srcIP = InetAddress.getByAddress(srcIPBytes);
+        } catch (UnknownHostException e) {
+            System.out.println("Invalid source IP in routing update");
+            return;
+        }
         int srcPort = Short.toUnsignedInt(buffer.getShort());
         byte[] destIPBytes = new byte[4];
         buffer.get(destIPBytes);
-        InetAddress destIP = InetAddress.getByAddress(destIPBytes);
+        InetAddress destIP;
+        try {
+            destIP = InetAddress.getByAddress(destIPBytes);
+        } catch (UnknownHostException e) {
+            System.out.println("Invalid destination IP in routing update");
+            return;
+        }
         int destPort = Short.toUnsignedInt(buffer.getShort());
         int tableLength = Short.toUnsignedInt(buffer.getShort());
 
@@ -250,18 +263,39 @@ public class ChatNode {
 
             byte[] destEntryIPBytes = new byte[4];
             entryBuffer.get(destEntryIPBytes);
-            InetAddress destEntryIP = InetAddress.getByAddress(destEntryIPBytes);
+            InetAddress destEntryIP;
+            try {
+                destEntryIP = InetAddress.getByAddress(destEntryIPBytes);
+            } catch (UnknownHostException e) {
+                System.out.println("Invalid destination IP in routing entry");
+                continue;
+            }
             int destEntryPort = Short.toUnsignedInt(entryBuffer.getShort());
 
             byte[] nextHopIPBytes = new byte[4];
             entryBuffer.get(nextHopIPBytes);
-            InetAddress nextHopIP = InetAddress.getByAddress(nextHopIPBytes);
+            InetAddress nextHopIP;
+            try {
+                nextHopIP = InetAddress.getByAddress(nextHopIPBytes);
+            } catch (UnknownHostException e) {
+                System.out.println("Invalid next hop IP in routing entry");
+                continue;
+            }
             int nextHopPort = Short.toUnsignedInt(entryBuffer.getShort());
 
             int hopCount = Byte.toUnsignedInt(entryBuffer.get());
             byte[] nullBytes = new byte[3];
             entryBuffer.get(nullBytes);
-            if (!(nullBytes[0] == 0 && nullBytes[1] == 0 && nullBytes[2] == 0)) return;
+            if (!(nullBytes[0] == 0 && nullBytes[1] == 0 && nullBytes[2] == 0)) {
+                System.out.println("Invalid padding in routing entry");
+                continue;
+            }
+
+            // Validate port numbers
+            if (destEntryPort == 0 || nextHopPort == 0) {
+                System.out.println("Invalid port in routing entry: destPort=" + destEntryPort + ", nextHopPort=" + nextHopPort);
+                continue;
+            }
 
             String key = destEntryIP.getHostAddress() + ":" + destEntryPort;
             advertisedDestinations.add(key);
@@ -424,9 +458,18 @@ public class ChatNode {
 
     public void sendMessage(String ipStr, int port, byte[] data) {
         try {
+            System.out.println("Attempting to send data to " + ipStr + ":" + (port + 1));
+            if (dataSocket == null || dataSocket.isClosed()) {
+                throw new IllegalStateException("Data socket is null or closed");
+            }
+
             InetAddress destIP = InetAddress.getByName(ipStr);
             int destDataPort = port + 1; // Destination data port (n+1)
             String targetKey = destIP.getHostAddress() + ":" + port; // Use routing port (n) for routing table lookup
+
+            // Debug: Print routing table
+            System.out.println("Routing table before sending to " + targetKey + ":");
+            printRoutingTable();
 
             // Check routing table for next hop
             RoutingEntry nextHop = routingTable.get(targetKey);
@@ -435,13 +478,26 @@ public class ChatNode {
                 return;
             }
 
+            // Validate nextHop fields
+            if (nextHop.nextHopIP == null || nextHop.nextHopPort == 0) {
+                System.out.println("Invalid routing entry for " + targetKey + ": nextHopIP=" + nextHop.nextHopIP + ", nextHopPort=" + nextHop.nextHopPort);
+                return;
+            }
+
+            System.out.println("Next hop found: " + nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1));
+
             // Establish connection to next hop's data port
             InetSocketAddress nextHopAddr = new InetSocketAddress(nextHop.nextHopIP, nextHop.nextHopPort + 1);
             ConnectionManager cm = connections.computeIfAbsent(nextHopAddr,
-                    k -> new ConnectionManager(dataSocket, nextHop.nextHopIP, nextHop.nextHopPort + 1));
-            if (!establishedConnections.contains(nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1))) {
+                    k -> {
+                        System.out.println("Creating new ConnectionManager for " + nextHopAddr);
+                        return new ConnectionManager(dataSocket, nextHop.nextHopIP, nextHop.nextHopPort + 1);
+                    });
+            String connectionKey = nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1);
+            if (!establishedConnections.contains(connectionKey)) {
+                System.out.println("Initiating connection to " + connectionKey);
                 cm.connect();
-                establishedConnections.add(nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1));
+                establishedConnections.add(connectionKey);
             }
 
             // Determine packet type based on data content
@@ -449,12 +505,17 @@ public class ChatNode {
                     PacketHeader.PacketType.MESSAGE : PacketHeader.PacketType.FILE;
 
             // Send data
+            System.out.println("Sending data to ConnectionManager...");
             cm.sendData(data);
 
             System.out.println((packetType == PacketHeader.PacketType.MESSAGE ? "Nachricht" : "Datei") +
-                    " gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP + ":" + (nextHop.nextHopPort + 1));
+                    " gesendet an " + ipStr + ":" + destDataPort + " via " + nextHop.nextHopIP.getHostAddress() + ":" + (nextHop.nextHopPort + 1));
+        } catch (NullPointerException e) {
+            System.err.println("NullPointerException beim Senden der Daten: " + e.getMessage());
+            e.printStackTrace();
         } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Daten: " + e.getMessage());
+            System.err.println("Fehler beim Senden der Daten: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -484,7 +545,10 @@ public class ChatNode {
             int destDataPort = port + 1;
             InetSocketAddress dest = new InetSocketAddress(ip, destDataPort);
             ConnectionManager cm = connections.computeIfAbsent(dest,
-                    k -> new ConnectionManager(dataSocket, ip, destDataPort));
+                    k -> {
+                        System.out.println("Creating new ConnectionManager for " + dest);
+                        return new ConnectionManager(dataSocket, ip, destDataPort);
+                    });
             cm.connect();
             establishedConnections.add(ip.getHostAddress() + ":" + destDataPort);
             System.out.println("Verbindungsaufbau initiiert mit " + ipStr + ":" + destDataPort);
@@ -517,6 +581,9 @@ public class ChatNode {
         ByteBuffer buffer = ByteBuffer.allocate(entries.size() * entrySize);
 
         for (RoutingEntry entry : entries) {
+            if (entry.destIP == null || entry.nextHopIP == null || entry.destPort == 0 || entry.nextHopPort == 0) {
+                continue;
+            }
             buffer.put(entry.destIP.getAddress());
             buffer.putShort((short) entry.destPort);
             buffer.put(entry.nextHopIP.getAddress());
@@ -527,13 +594,5 @@ public class ChatNode {
         return buffer.array();
     }
 
-    private byte[] createRoutingHeader(InetAddress srcIP, int srcPort, InetAddress destIP, int destPort, int tableLength) {
-        ByteBuffer buffer = ByteBuffer.allocate(14);
-        buffer.put(srcIP.getAddress());
-        buffer.putShort((short) srcPort);
-        buffer.put(destIP.getAddress());
-        buffer.putShort((short) destPort);
-        buffer.putShort((short) tableLength);
-        return buffer.array();
-    }
+    private byte[] createRoutingHeader(InetAddress srcIP, int srcPort, InetAddress destIP, int destPort, int tableLength) {    ByteBuffer buffer = ByteBuffer.allocate(14);    buffer.put(srcIP.getAddress());    buffer.putShort((short) srcPort);    buffer.put(destIP.getAddress());    buffer.putShort((short) destPort);    buffer.putShort((short) tableLength);    return buffer.array();}
 }
