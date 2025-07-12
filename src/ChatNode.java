@@ -23,6 +23,11 @@ public class ChatNode {
     private final Set<String> establishedConnections = ConcurrentHashMap.newKeySet();
     FragmentManager fragmentManager = new FragmentManager();
 
+    // --- Go-Back-N ARQ fields ---
+    private final int WINDOW_SIZE = 5; // Window size for Go-Back-N
+    private final Map<String, SenderWindow> senderWindows = new ConcurrentHashMap<>();
+    private final Map<String, Integer> expectedSeqNums = new ConcurrentHashMap<>();
+
     public ChatNode(InetAddress ip, int routingPort) throws Exception {
         this.routingPort = routingPort;
         this.dataPort = routingPort + 1;
@@ -421,47 +426,63 @@ public class ChatNode {
                     ByteBuffer buffer = ByteBuffer.wrap(packet.getData(), 0, packet.getLength());
 
                     byte type = buffer.get();
-                    String key = packet.getAddress().getHostAddress() + ":" + packet.getPort();
+                    String senderKey = packet.getAddress().getHostAddress() + ":" + packet.getPort();
 
                     if (type == PacketType.SYN.getValue()) {
                         sendPacket(PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                        System.out.println("SYN empfangen von " + key + ", SYN-ACK gesendet");
+                        System.out.println("SYN empfangen von " + senderKey + ", SYN-ACK gesendet");
                     } else if (type == PacketType.SYN_ACK.getValue()) {
-                        establishedConnections.add(key);
-                        System.out.println("Verbindung hergestellt mit " + key);
+                        establishedConnections.add(senderKey);
+                        System.out.println("Verbindung hergestellt mit " + senderKey);
                     } else if (type == PacketType.FIN.getValue()) {
                         sendPacket(PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                        establishedConnections.remove(key);
-                        System.out.println("FIN empfangen von " + key + ", FIN-ACK gesendet, Verbindung geschlossen");
+                        establishedConnections.remove(senderKey);
+                        System.out.println("FIN empfangen von " + senderKey + ", FIN-ACK gesendet, Verbindung geschlossen");
                     } else if (type == PacketType.FIN_ACK.getValue()) {
-                        establishedConnections.remove(key);
-                        System.out.println("FIN-ACK empfangen von " + key + ", Verbindung geschlossen");
-                    } else if (type == PacketType.MESSAGE.getValue()) {
-                        byte[] msgBytes = new byte[buffer.remaining()];
-                        buffer.get(msgBytes);
-                        String msg = new String(msgBytes, "UTF-8");
-                        System.out.println("Nachricht empfangen von " + packet.getAddress().getHostAddress()
-                                + ":" + packet.getPort() + " -> " + msg);
-                    }
-                    else if (type == PacketType.FILE.getValue()) {
-                        byte[] fragment = new byte[buffer.remaining()];
-                        buffer.get(fragment);
+                        establishedConnections.remove(senderKey);
+                        System.out.println("FIN-ACK empfangen von " + senderKey + ", Verbindung geschlossen");
+                    } else if (type == PacketType.MESSAGE.getValue() || type == PacketType.FILE.getValue()) {
+                        int seqNum = buffer.getInt();
 
-                        byte[] fullPayload = fragmentManager.processChunk(fragment);
-                        if (fullPayload != null) {
-                            ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
-                            int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
+                        int expectedSeqNum = expectedSeqNums.getOrDefault(senderKey, 0);
 
-                            byte[] nameBytes = new byte[fileNameLen];
-                            payloadBuffer.get(nameBytes);
-                            String fileName = new String(nameBytes, StandardCharsets.UTF_8);
+                        if (seqNum == expectedSeqNum) {
+                            byte[] msgBytes = new byte[buffer.remaining()];
+                            buffer.get(msgBytes);
 
-                            byte[] fileContent = new byte[payloadBuffer.remaining()];
-                            payloadBuffer.get(fileContent);
+                            if (type == PacketType.MESSAGE.getValue()) {
+                                String msg = new String(msgBytes, StandardCharsets.UTF_8);
+                                System.out.println("Nachricht empfangen von " + senderKey + " -> " + msg);
+                            } else if (type == PacketType.FILE.getValue()) {
+                                byte[] fullPayload = fragmentManager.processChunk(msgBytes);
+                                if (fullPayload != null) {
+                                    ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
+                                    int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
 
-                            Path outputPath = Paths.get("received_" + fileName);
-                            Files.write(outputPath, fileContent);
-                            System.out.println("Datei empfangen und gespeichert: " + outputPath);
+                                    byte[] nameBytes = new byte[fileNameLen];
+                                    payloadBuffer.get(nameBytes);
+                                    String fileName = new String(nameBytes, StandardCharsets.UTF_8);
+
+                                    byte[] fileContent = new byte[payloadBuffer.remaining()];
+                                    payloadBuffer.get(fileContent);
+
+                                    Path outputPath = Paths.get("received_" + fileName);
+                                    Files.write(outputPath, fileContent);
+                                    System.out.println("Datei empfangen und gespeichert: " + outputPath);
+                                }
+                            }
+
+                            expectedSeqNums.put(senderKey, expectedSeqNum + 1);
+
+                            sendAck(packet.getAddress(), packet.getPort(), seqNum);
+                        } else {
+                            sendAck(packet.getAddress(), packet.getPort(), expectedSeqNum - 1);
+                        }
+                    } else if (type == PacketType.ACK.getValue()) {
+                        int ackSeqNum = buffer.getInt();
+                        SenderWindow window = senderWindows.get(senderKey);
+                        if (window != null) {
+                            window.receiveAck(ackSeqNum);
                         }
                     }
 
@@ -470,31 +491,62 @@ public class ChatNode {
         }).start();
     }
 
-    private void sendPacket(PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
-        ByteBuffer buffer = ByteBuffer.allocate(1 + data.length);
+    private void sendAck(InetAddress ip, int port, int ackSeqNum) throws Exception {
+        ByteBuffer buffer = ByteBuffer.allocate(1 + 4);
+        buffer.put(PacketType.ACK.getValue());
+        buffer.putInt(ackSeqNum);
+        byte[] ackData = buffer.array();
+        DatagramPacket ackPacket = new DatagramPacket(ackData, ackData.length, ip, port);
+        dataSocket.send(ackPacket);
+    }
+
+    private void sendPacket(PacketType type, byte[] payload, InetAddress ip, int port) throws Exception {
+        ByteBuffer buffer = ByteBuffer.allocate(1 + payload.length);
         buffer.put(type.getValue());
-        buffer.put(data);
-        byte[] packetData = buffer.array();
-        DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
+        buffer.put(payload);
+        byte[] data = buffer.array();
+        DatagramPacket packet = new DatagramPacket(data, data.length, ip, port);
         dataSocket.send(packet);
     }
 
-    public void sendMessage(String ipStr, int port, String message) {
+    private void sendRoutingTableToNeighbors(InetSocketAddress excludeNeighbor) {
+        for (InetSocketAddress neighbor : directNeighbors) {
+            if (excludeNeighbor != null && neighbor.equals(excludeNeighbor)) {
+                continue;
+            }
+            sendRoutingTableToSpecificNeighbor(neighbor);
+        }
+    }
+
+    public void sendMessage(String destIpStr, int destPort, String message) {
         try {
-            InetAddress destIP = InetAddress.getByName(ipStr);
-            int destDataPort = port + 1;
+            InetAddress destIP = InetAddress.getByName(destIpStr);
+            int destDataPort = destPort + 1;
+            String destKey = destIpStr + ":" + destDataPort;
 
-            byte typeByte = PacketType.MESSAGE.getValue();
-            byte[] messageBytes = message.getBytes("UTF-8");
+            byte[] msgBytes = message.getBytes(StandardCharsets.UTF_8);
 
-            byte[] packetBytes = new byte[1 + messageBytes.length];
-            packetBytes[0] = typeByte;
-            System.arraycopy(messageBytes, 0, packetBytes, 1, messageBytes.length);
+            senderWindows.putIfAbsent(destKey, new SenderWindow(destIP, destDataPort));
+            SenderWindow window = senderWindows.get(destKey);
 
-            DatagramPacket packet = new DatagramPacket(packetBytes, packetBytes.length, destIP, destDataPort);
-            dataSocket.send(packet);
+            while (true) {
+                synchronized (window) {
+                    if (window.nextSeqNum < window.baseSeqNum + WINDOW_SIZE) {
+                        byte[] pkt = buildDataPacket(PacketType.MESSAGE.getValue(), window.nextSeqNum, msgBytes);
+                        DatagramPacket packet = new DatagramPacket(pkt, pkt.length, destIP, destDataPort);
+                        dataSocket.send(packet);
+                        window.sentPackets.put(window.nextSeqNum, pkt);
 
-            System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
+                        if (window.baseSeqNum == window.nextSeqNum) {
+                            window.startTimer();
+                        }
+                        window.nextSeqNum++;
+                        break;
+                    }
+                }
+                Thread.sleep(50);
+            }
+            System.out.println("Nachricht gesendet: " + message);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
         }
@@ -504,38 +556,98 @@ public class ChatNode {
         try {
             InetAddress destIP = InetAddress.getByName(destIpStr);
             int destDataPort = destPort + 1;
+            String destKey = destIpStr + ":" + destDataPort;
 
-            // Read file content
             byte[] fileData = Files.readAllBytes(Paths.get(filePath));
             String fileName = Paths.get(filePath).getFileName().toString();
             byte[] fileNameBytes = fileName.getBytes(StandardCharsets.UTF_8);
 
-            // Prepend filename length and filename before content
             ByteBuffer filePayload = ByteBuffer.allocate(2 + fileNameBytes.length + fileData.length);
             filePayload.putShort((short) fileNameBytes.length);
             filePayload.put(fileNameBytes);
             filePayload.put(fileData);
 
-            // Fragment and send
             List<byte[]> fragments = fragmentManager.fragment(filePayload.array());
+
+            senderWindows.putIfAbsent(destKey, new SenderWindow(destIP, destDataPort));
+            SenderWindow window = senderWindows.get(destKey);
+
             for (byte[] fragment : fragments) {
-                ByteBuffer packetBuffer = ByteBuffer.allocate(1 + fragment.length);
-                packetBuffer.put(PacketType.FILE.getValue());
-                packetBuffer.put(fragment);
+                while (true) {
+                    synchronized (window) {
+                        if (window.nextSeqNum < window.baseSeqNum + WINDOW_SIZE) {
+                            byte[] pkt = buildDataPacket(PacketType.FILE.getValue(), window.nextSeqNum, fragment);
+                            DatagramPacket packet = new DatagramPacket(pkt, pkt.length, destIP, destDataPort);
+                            dataSocket.send(packet);
+                            window.sentPackets.put(window.nextSeqNum, pkt);
 
-                DatagramPacket packet = new DatagramPacket(packetBuffer.array(), packetBuffer.capacity(), destIP, destDataPort);
-                dataSocket.send(packet);
+                            if (window.baseSeqNum == window.nextSeqNum) {
+                                window.startTimer();
+                            }
+                            window.nextSeqNum++;
+                            break;
+                        }
+                    }
+                    Thread.sleep(50);
+                }
             }
-
             System.out.println("Datei gesendet: " + fileName);
-
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Datei: " + e.getMessage());
         }
     }
 
+    private byte[] buildDataPacket(byte packetType, int seqNum, byte[] payload) {
+        ByteBuffer buffer = ByteBuffer.allocate(1 + 4 + payload.length);
+        buffer.put(packetType);
+        buffer.putInt(seqNum);
+        buffer.put(payload);
+        return buffer.array();
+    }
 
-    public enum PacketType {
+    private byte[] encodeRoutingTable() throws Exception {
+        ByteBuffer buffer = ByteBuffer.allocate(routingTable.size() * 16);
+        for (RoutingEntry entry : routingTable.values()) {
+            if (entry.destIP == null || entry.destPort == 0 || entry.nextHopIP == null || entry.nextHopPort == 0) {
+                continue;
+            }
+            buffer.put(entry.destIP.getAddress());
+            buffer.putShort((short) entry.destPort);
+            buffer.put(entry.nextHopIP.getAddress());
+            buffer.putShort((short) entry.nextHopPort);
+            buffer.put((byte) entry.hopCount);
+            buffer.put(new byte[3]);
+        }
+        return buffer.array();
+    }
+
+    private byte[] createRoutingHeader(InetAddress srcIP, int srcPort, InetAddress destIP, int destPort, int tableLength) {
+        ByteBuffer buffer = ByteBuffer.allocate(14);
+        buffer.put(srcIP.getAddress());
+        buffer.putShort((short) srcPort);
+        buffer.put(destIP.getAddress());
+        buffer.putShort((short) destPort);
+        buffer.putShort((short) tableLength);
+        return buffer.array();
+    }
+
+    private class RoutingEntry {
+        InetAddress destIP;
+        int destPort;
+        InetAddress nextHopIP;
+        int nextHopPort;
+        int hopCount;
+
+        RoutingEntry(InetAddress destIP, int destPort, InetAddress nextHopIP, int nextHopPort, int hopCount) {
+            this.destIP = destIP;
+            this.destPort = destPort;
+            this.nextHopIP = nextHopIP;
+            this.nextHopPort = nextHopPort;
+            this.hopCount = hopCount;
+        }
+    }
+
+    private enum PacketType {
         FILE((byte) 0),
         MESSAGE((byte) 1),
         SYN((byte) 2),
@@ -555,61 +667,76 @@ public class ChatNode {
         }
     }
 
-    public void initiateConnection(String ipStr, int port) {
-        try {
-            InetAddress ip = InetAddress.getByName(ipStr);
-            sendPacket(PacketType.SYN, new byte[0], ip, port + 1);
-            System.out.println("SYN gesendet an " + ipStr + ":" + (port + 1));
-        } catch (Exception e) {
-            System.out.println("Fehler beim Verbindungsaufbau: " + e.getMessage());
+    // --- Go-Back-N sender window management ---
+    private class SenderWindow {
+        int baseSeqNum = 0;
+        int nextSeqNum = 0;
+        Map<Integer, byte[]> sentPackets = new HashMap<>();
+        Timer timer = new Timer();
+        TimerTask retransmitTask = null;
+
+        InetAddress destIP;
+        int destPort;
+
+        SenderWindow(InetAddress ip, int port) {
+            this.destIP = ip;
+            this.destPort = port;
         }
-    }
 
-    private void sendRoutingTableToNeighbors(InetSocketAddress excludeNeighbor) {
-        try {
-            for (InetSocketAddress neighbor : directNeighbors) {
-                if (excludeNeighbor != null && neighbor.equals(excludeNeighbor)) {
-                    continue; // Skip the neighbor that triggered the update
-                }
-                byte[] tableBytes = encodeRoutingTable();
-                byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
-
-                byte[] packetData = new byte[headerBytes.length + tableBytes.length];
-                System.arraycopy(headerBytes, 0, packetData, 0, headerBytes.length);
-                System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
-
-                DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
-                routingSocket.send(packet);
+        synchronized void startTimer() {
+            if (retransmitTask != null) {
+                retransmitTask.cancel();
             }
-        } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
-        }
-    }
-
-    private byte[] encodeRoutingTable() throws Exception {
-        Collection<RoutingEntry> entries = routingTable.values();
-        int entrySize = 16;
-        ByteBuffer buffer = ByteBuffer.allocate(entries.size() * entrySize);
-
-        for (RoutingEntry entry : entries) {
-            buffer.put(entry.destIP.getAddress());
-            buffer.putShort((short) entry.destPort);
-            buffer.put(entry.nextHopIP.getAddress());
-            buffer.putShort((short) entry.nextHopPort);
-            buffer.put((byte) entry.hopCount);
-            buffer.put(new byte[3]);
+            retransmitTask = new TimerTask() {
+                @Override
+                public void run() {
+                    try {
+                        retransmitAll();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            };
+            timer.schedule(retransmitTask, 1000);
         }
 
-        return buffer.array();
+        synchronized void stopTimer() {
+            if (retransmitTask != null) {
+                retransmitTask.cancel();
+                retransmitTask = null;
+            }
+        }
+
+        synchronized void retransmitAll() throws Exception {
+            System.out.println("Timeout! Retransmitting from seqNum " + baseSeqNum);
+            for (int seq = baseSeqNum; seq < nextSeqNum; seq++) {
+                byte[] pkt = sentPackets.get(seq);
+                if (pkt != null) {
+                    DatagramPacket packet = new DatagramPacket(pkt, pkt.length, destIP, destPort);
+                    dataSocket.send(packet);
+                }
+            }
+            startTimer();
+        }
+
+        synchronized void receiveAck(int ackSeqNum) {
+            if (ackSeqNum >= baseSeqNum) {
+                // Remove all acknowledged packets from sentPackets map up to ackSeqNum
+                for (int seq = baseSeqNum; seq <= ackSeqNum; seq++) {
+                    sentPackets.remove(seq);
+                }
+                baseSeqNum = ackSeqNum + 1;
+                if (baseSeqNum == nextSeqNum) {
+                    stopTimer();
+                } else {
+                    startTimer();
+                }
+            }
+        }
+
     }
 
-    private byte[] createRoutingHeader(InetAddress srcIP, int srcPort, InetAddress destIP, int destPort, int tableLength) {
-        ByteBuffer buffer = ByteBuffer.allocate(14);
-        buffer.put(srcIP.getAddress());
-        buffer.putShort((short) srcPort);
-        buffer.put(destIP.getAddress());
-        buffer.putShort((short) destPort);
-        buffer.putShort((short) tableLength);
-        return buffer.array();
-    }
+    // FragmentManager class - assumed implemented similarly as before.
+    // Add your fragmentManager implementation here.
+
 }
