@@ -1,5 +1,9 @@
 import java.net.*;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -17,6 +21,7 @@ public class ChatNode {
     private final int dataPort;
     private volatile boolean running = true;
     private final Set<String> establishedConnections = ConcurrentHashMap.newKeySet();
+    FragmentManager fragmentManager = new FragmentManager();
 
     public ChatNode(InetAddress ip, int routingPort) throws Exception {
         this.routingPort = routingPort;
@@ -438,6 +443,28 @@ public class ChatNode {
                         System.out.println("Nachricht empfangen von " + packet.getAddress().getHostAddress()
                                 + ":" + packet.getPort() + " -> " + msg);
                     }
+                    else if (type == PacketType.FILE.getValue()) {
+                        byte[] fragment = new byte[buffer.remaining()];
+                        buffer.get(fragment);
+
+                        byte[] fullPayload = fragmentManager.processChunk(fragment);
+                        if (fullPayload != null) {
+                            ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
+                            int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
+
+                            byte[] nameBytes = new byte[fileNameLen];
+                            payloadBuffer.get(nameBytes);
+                            String fileName = new String(nameBytes, StandardCharsets.UTF_8);
+
+                            byte[] fileContent = new byte[payloadBuffer.remaining()];
+                            payloadBuffer.get(fileContent);
+
+                            Path outputPath = Paths.get("received_" + fileName);
+                            Files.write(outputPath, fileContent);
+                            System.out.println("Datei empfangen und gespeichert: " + outputPath);
+                        }
+                    }
+
                 } catch (Exception ignored) {}
             }
         }).start();
@@ -472,6 +499,41 @@ public class ChatNode {
             System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
         }
     }
+
+    public void sendFile(String filePath, String destIpStr, int destPort) {
+        try {
+            InetAddress destIP = InetAddress.getByName(destIpStr);
+            int destDataPort = destPort + 1;
+
+            // Read file content
+            byte[] fileData = Files.readAllBytes(Paths.get(filePath));
+            String fileName = Paths.get(filePath).getFileName().toString();
+            byte[] fileNameBytes = fileName.getBytes(StandardCharsets.UTF_8);
+
+            // Prepend filename length and filename before content
+            ByteBuffer filePayload = ByteBuffer.allocate(2 + fileNameBytes.length + fileData.length);
+            filePayload.putShort((short) fileNameBytes.length);
+            filePayload.put(fileNameBytes);
+            filePayload.put(fileData);
+
+            // Fragment and send
+            List<byte[]> fragments = fragmentManager.fragment(filePayload.array());
+            for (byte[] fragment : fragments) {
+                ByteBuffer packetBuffer = ByteBuffer.allocate(1 + fragment.length);
+                packetBuffer.put(PacketType.FILE.getValue());
+                packetBuffer.put(fragment);
+
+                DatagramPacket packet = new DatagramPacket(packetBuffer.array(), packetBuffer.capacity(), destIP, destDataPort);
+                dataSocket.send(packet);
+            }
+
+            System.out.println("Datei gesendet: " + fileName);
+
+        } catch (Exception e) {
+            System.out.println("Fehler beim Senden der Datei: " + e.getMessage());
+        }
+    }
+
 
     public enum PacketType {
         FILE((byte) 0),

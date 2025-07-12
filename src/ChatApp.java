@@ -63,10 +63,21 @@ public class ChatApp {
                         break;
 
                     case "6":
+                        System.out.print("Pfad zur Datei: ");
+                        String filePath = scanner.nextLine();
+                        System.out.print("Empfänger IP: ");
+                        String fileDestIp = scanner.nextLine();
+                        System.out.print("Empfänger Port: ");
+                        int fileDestPort = Integer.parseInt(scanner.nextLine());
+                        chatNode.sendFile(filePath, fileDestIp, fileDestPort);
+                        break;
+                    case "7":
                         running = false;
                         System.out.println("Beende...");
                         chatNode.shutdown();
                         break;
+
+
 
                     default:
                         System.out.println("Ungültige Eingabe!");
@@ -88,7 +99,8 @@ public class ChatApp {
         System.out.println("3) Verbindung trennen (IP + Port)");
         System.out.println("4) Routing-Tabelle anzeigen");
         System.out.println("5) Hilfe anzeigen");
-        System.out.println("6) Beenden");
+        System.out.println("6) Datei senden (Pfad + Ziel-IP + Ziel-Port)");
+        System.out.println("7) Beenden");
         System.out.print("Ihre Wahl: ");
     }
 
