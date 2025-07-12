@@ -413,7 +413,7 @@ public class ChatNode {
 
     private void startDataReceiver() {
         new Thread(() -> {
-            byte[] buf = new byte[1500];
+            byte[] buf = new byte[2048];
             while (running) {
                 try {
                     DatagramPacket packet = new DatagramPacket(buf, buf.length);
@@ -426,28 +426,39 @@ public class ChatNode {
                     if (type == PacketType.SYN.getValue()) {
                         sendPacket(PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
                         System.out.println("SYN empfangen von " + key + ", SYN-ACK gesendet");
+
                     } else if (type == PacketType.SYN_ACK.getValue()) {
                         establishedConnections.add(key);
                         System.out.println("Verbindung hergestellt mit " + key);
+
                     } else if (type == PacketType.FIN.getValue()) {
                         sendPacket(PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
                         establishedConnections.remove(key);
                         System.out.println("FIN empfangen von " + key + ", FIN-ACK gesendet, Verbindung geschlossen");
+
                     } else if (type == PacketType.FIN_ACK.getValue()) {
                         establishedConnections.remove(key);
                         System.out.println("FIN-ACK empfangen von " + key + ", Verbindung geschlossen");
+
                     } else if (type == PacketType.MESSAGE.getValue()) {
                         byte[] msgBytes = new byte[buffer.remaining()];
                         buffer.get(msgBytes);
                         String msg = new String(msgBytes, "UTF-8");
                         System.out.println("Nachricht empfangen von " + packet.getAddress().getHostAddress()
                                 + ":" + packet.getPort() + " -> " + msg);
-                    }
-                    else if (type == PacketType.FILE.getValue()) {
-                        byte[] fragment = new byte[buffer.remaining()];
-                        buffer.get(fragment);
 
-                        byte[] fullPayload = fragmentManager.processChunk(fragment);
+                    } else if (type == PacketType.FILE.getValue()) {
+                        // Fragment ohne Typ-Byte extrahieren
+                        byte[] fragment = new byte[packet.getLength() - 1];
+                        buffer.get(fragment); // das erste Byte (type) wurde bereits gelesen
+
+                        byte[] fullPayload = fragmentManager.processChunk(
+                                fragment,
+                                dataSocket,
+                                packet.getAddress(),
+                                packet.getPort()
+                        );
+
                         if (fullPayload != null) {
                             ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
                             int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
@@ -465,10 +476,13 @@ public class ChatNode {
                         }
                     }
 
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    System.out.println("Fehler im DataReceiver: " + e.getMessage());
+                }
             }
         }).start();
     }
+
 
     private void sendPacket(PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
         ByteBuffer buffer = ByteBuffer.allocate(1 + data.length);
@@ -516,23 +530,20 @@ public class ChatNode {
             filePayload.put(fileNameBytes);
             filePayload.put(fileData);
 
-            // Fragment and send
-            List<byte[]> fragments = fragmentManager.fragment(filePayload.array());
-            for (byte[] fragment : fragments) {
-                ByteBuffer packetBuffer = ByteBuffer.allocate(1 + fragment.length);
-                packetBuffer.put(PacketType.FILE.getValue());
-                packetBuffer.put(fragment);
+            // Fragment and send with Go-Back-N
+            FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(filePayload.array());
+            DatagramSocket ackSocket = new DatagramSocket();  // ACKs separat behandeln
+            fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), ackSocket, destIP, destDataPort);
+            ackSocket.close();  // Nach Abschluss
 
-                DatagramPacket packet = new DatagramPacket(packetBuffer.array(), packetBuffer.capacity(), destIP, destDataPort);
-                dataSocket.send(packet);
-            }
+
 
             System.out.println("Datei gesendet: " + fileName);
-
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Datei: " + e.getMessage());
         }
     }
+
 
 
     public enum PacketType {
