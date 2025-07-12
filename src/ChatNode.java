@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.Logger;
 
 public class ChatNode {
     private final Map<String, RoutingEntry> routingTable = new ConcurrentHashMap<>();
@@ -117,16 +118,9 @@ public class ChatNode {
             System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
 
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
-            System.out.println("Sending packet to: " + neighbor);
-            System.out.println("Packet length: " + packetData.length);
-            System.out.print("Packet data (decimal): [");
-            for (int i = 0; i < packetData.length; i++) {
-                System.out.print(Byte.toUnsignedInt(packetData[i]));
-                if (i < packetData.length - 1) {
-                    System.out.print(", ");
-                }
-            }
-            System.out.println("]");
+            LoggerUtil.sendPacket(String.valueOf(neighbor));
+            LoggerUtil.sendLength(packetData.length);
+            LoggerUtil.packetData(packetData);
 
             routingSocket.send(packet);
         } catch (Exception e) {
@@ -218,7 +212,8 @@ public class ChatNode {
             DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
             routingSocket.send(packet);
 
-            System.out.println("Poisoned Update gesendet an " + neighbor);
+            LoggerUtil.poisonedUpdate(neighbor);
+
         } catch (Exception e) {
             System.out.println("Fehler beim Senden des Poisoned Updates: " + e.getMessage());
         }
@@ -425,7 +420,7 @@ public class ChatNode {
 
                     if (type == PacketType.SYN.getValue()) {
                         sendPacket(PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                        System.out.println("SYN empfangen von " + key + ", SYN-ACK gesendet");
+                        LoggerUtil.syn(key);
 
                     } else if (type == PacketType.SYN_ACK.getValue()) {
                         establishedConnections.add(key);
@@ -433,12 +428,14 @@ public class ChatNode {
 
                     } else if (type == PacketType.FIN.getValue()) {
                         sendPacket(PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        LoggerUtil.fin(key);
                         establishedConnections.remove(key);
-                        System.out.println("FIN empfangen von " + key + ", FIN-ACK gesendet, Verbindung geschlossen");
+
 
                     } else if (type == PacketType.FIN_ACK.getValue()) {
+                        LoggerUtil.finAck(key);
                         establishedConnections.remove(key);
-                        System.out.println("FIN-ACK empfangen von " + key + ", Verbindung geschlossen");
+
 
                     } else if (type == PacketType.MESSAGE.getValue()) {
                         byte[] msgBytes = new byte[buffer.remaining()];
