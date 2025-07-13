@@ -24,8 +24,64 @@ public class FragmentManager {
     }
 
 
+    public void sendWithGoBackN(int messageId, List<byte[]> fragments, DatagramSocket socket, PacketHeader.PacketType ptype, InetAddress ip, int port, int sourcePort) throws Exception {
+        int base = 0;
+        int nextSeq = 0;
+        int total = fragments.size();
+        PacketHeader header;
+
+        socket.setSoTimeout(TIMEOUT_MS);
+
+        while (base < total) {
+            while (nextSeq < base + WINDOW_SIZE && nextSeq < total) {
+                byte[] fragment = fragments.get(nextSeq);
+
+                ByteBuffer bufferWithType = ByteBuffer.allocate(19 + fragment.length);
+                byte[] payloadOnly = Arrays.copyOfRange(fragment, 10, fragment.length); // nur Nutzdaten (nach 10 Byte Header)
+                header = new PacketHeader(myIp, sourcePort, ip, port, ptype, fragment.length, CRC.calculate(payloadOnly));
+
+                bufferWithType.put(header.toBytes());
+                bufferWithType.put(fragment);
+                byte[] packetData = bufferWithType.array();
+
+                DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
+                LoggerUtil.header(header.toString());
+                socket.send(packet);
+                LoggerUtil.info("GoBackN", "Gesendet: Fragment " + nextSeq);
+                nextSeq++;
+            }
+
+            try {
+                byte[] ackBuf = new byte[1024];
+                DatagramPacket ackPacket = new DatagramPacket(ackBuf, ackBuf.length);
+                socket.receive(ackPacket);
+
+                byte[] data = Arrays.copyOfRange(ackBuf, 0, ackPacket.getLength());
+                PacketHeader ackHeader = PacketHeader.fromBytes(data);
+
+                if (ackHeader.type == PacketHeader.PacketType.DATA_ACK) {
+                    ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, ackHeader.length);
+                    int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
+                    int ackFrag = ackPayload.getInt();
+
+                    if (ackMsgId == messageId) {
+                        LoggerUtil.info("GoBackN", "DATA ACK erhalten für Fragment " + ackFrag);
+                        base = ackFrag + 1;
+                    } else {
+                        LoggerUtil.warn("GoBackN", "DATA ACK ignoriert – falsche MessageID");
+                    }
+                } else {
+                    LoggerUtil.warn("GoBackN", "Paket ist kein DATA ACK – ignoriert");
+                }
+            } catch (SocketTimeoutException e) {
+                LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
+                nextSeq = base;
+            }
+        }
+    }
+
     // Go-Back-N Sendelogik
-    public void sendWithGoBackN(int messageId, List<byte[]> fragments, DatagramSocket socket, PacketHeader.PacketType ptype, InetAddress ip, int port) throws Exception {
+/*    public void sendWithGoBackN(int messageId, List<byte[]> fragments, DatagramSocket socket, PacketHeader.PacketType ptype, InetAddress ip, int port) throws Exception {
         int base = 0;
         int nextSeq = 0;
         int total = fragments.size();
@@ -60,27 +116,27 @@ public class FragmentManager {
                 byte[] data = Arrays.copyOfRange(ackBuf, 0, ackPacket.getLength());
                 PacketHeader ackHeader = PacketHeader.fromBytes(data);
 
-                if (ackHeader.type == PacketHeader.PacketType.ACK) {
+                if (ackHeader.type == PacketHeader.PacketType.DATA_ACK) {
                     ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, ackHeader.length);
                     int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
                     int ackFrag = ackPayload.getInt();
                     // ackPayload.getInt(); // TotalChunks → bei ACK egal
 
                     if (ackMsgId == messageId) {
-                        LoggerUtil.info("GoBackN", "ACK erhalten für Fragment " + ackFrag);
+                        LoggerUtil.info("GoBackN", "DATA ACK erhalten für Fragment " + ackFrag);
                         base = ackFrag + 1;
                     } else {
-                        LoggerUtil.warn("GoBackN", "ACK ignoriert – falsche MessageID");
+                        LoggerUtil.warn("GoBackN", "DATA ACK ignoriert – falsche MessageID");
                     }
                 } else {
-                    LoggerUtil.warn("GoBackN", "Paket ist kein ACK – ignoriert");
+                    LoggerUtil.warn("GoBackN", "Paket ist kein DATA ACK – ignoriert");
                 }
             } catch (SocketTimeoutException e) {
                 LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
                 nextSeq = base;
             }
         }
-    }
+    }*/
 
 
 
@@ -156,10 +212,10 @@ public class FragmentManager {
 
             PacketHeader header = new PacketHeader(
                     myIp,
-                    socket.getLocalPort(),
+                    myPort,
                     ip,
                     port,
-                    PacketHeader.PacketType.ACK,
+                    PacketHeader.PacketType.DATA_ACK,
                     10, // payload length
                     CRC.calculate(payloadArray)  // optional: du kannst auch über den Payload CRC rechnen
             );
@@ -170,6 +226,7 @@ public class FragmentManager {
 
             DatagramPacket ackPacket = new DatagramPacket(ackPacketBuffer.array(), ackPacketBuffer.capacity(), ip, port);
             LoggerUtil.goBackAck(messageId, fragNum, ip.getHostAddress(), port);
+            LoggerUtil.header(header.toString());
 
             socket.send(ackPacket);
         } catch (Exception e) {

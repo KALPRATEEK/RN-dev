@@ -499,7 +499,7 @@ private void startDataReceiver() {
     }
 
 
-public void sendMessage(String ipStr, int port, String message){
+/*public void sendMessage(String ipStr, int port, String message){
     try {
         InetAddress destIP = InetAddress.getByName(ipStr);
         int destDataPort = port + 1;
@@ -521,7 +521,36 @@ public void sendMessage(String ipStr, int port, String message){
     } catch (Exception e) {
         System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
     }
-}
+}*/
+
+    public void sendMessage(String ipStr, int port, String message){
+        try {
+            InetAddress destIP = InetAddress.getByName(ipStr);
+            int destDataPort = port + 1;
+
+            byte[] messageBytes = message.getBytes("UTF-8");
+            ByteBuffer payload = ByteBuffer.allocate(messageBytes.length);
+            payload.put(messageBytes);
+
+            FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(payload.array());
+
+            DatagramSocket ackSocket = new DatagramSocket();
+            fragmentManager.sendWithGoBackN(
+                    fragmented.messageId(),
+                    fragmented.fragments(),
+                    ackSocket,
+                    PacketHeader.PacketType.MESSAGE,
+                    destIP,
+                    destDataPort,
+                    dataPort  // <-- Wichtig: manueller Port im Header
+            );
+            ackSocket.close();
+
+            System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
+        } catch (Exception e) {
+            System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
+        }
+    }
 
     public void sendFile(String filePath, String destIpStr, int destPort) {
         try {
@@ -542,7 +571,7 @@ public void sendMessage(String ipStr, int port, String message){
             // Fragment and send with Go-Back-N
             FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(filePayload.array());
             DatagramSocket ackSocket = new DatagramSocket();  // ACKs separat behandeln
-            fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), ackSocket,  PacketHeader.PacketType.FILE, destIP, destDataPort);
+            fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), ackSocket,  PacketHeader.PacketType.FILE, destIP, destDataPort,dataPort);
             ackSocket.close();  // Nach Abschluss
 
 
