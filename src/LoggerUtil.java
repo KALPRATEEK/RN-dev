@@ -2,7 +2,7 @@ import java.net.InetSocketAddress;
 
 public class LoggerUtil {
 
-    public static boolean enabled = false; // Standard: Logging ist an
+    public static boolean enabled = true; // Standard: Logging ist an
 
     public static void info(String tag, String msg) {
         if (enabled) {
@@ -82,4 +82,15 @@ public class LoggerUtil {
     }
 
 
+    public static void goBackAck(int messageId, int fragNum, String hostAddress, int port) {
+        if (enabled){
+            System.out.println("[ACK] Sende ACK für Message " + messageId + ", Chunk " + fragNum + " → an " + hostAddress + ":" + port);
+        }
+    }
+
+    public static void header(String string) {
+        if (enabled){
+            System.out.println("Header: " + string);
+        }
+    }
 }

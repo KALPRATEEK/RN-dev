@@ -15,13 +15,21 @@ public class FragmentManager {
 
     private final Map<Integer, MessageReassemblyBuffer> reassemblyBuffers = new ConcurrentHashMap<>();
     private int nextMessageId = 0;
+    private InetAddress myIp;
+    private int myPort;
+
+    public FragmentManager(InetAddress ip, int port){
+        myIp = ip;
+        myPort = port;
+    }
 
 
     // Go-Back-N Sendelogik
-    public void sendWithGoBackN(int messageId, List<byte[]> fragments, DatagramSocket socket, InetAddress ip, int port) throws Exception {
+    public void sendWithGoBackN(int messageId, List<byte[]> fragments, DatagramSocket socket, PacketHeader.PacketType ptype, InetAddress ip, int port) throws Exception {
         int base = 0;
         int nextSeq = 0;
         int total = fragments.size();
+        PacketHeader header;
 
         socket.setSoTimeout(TIMEOUT_MS);
 
@@ -29,39 +37,73 @@ public class FragmentManager {
             while (nextSeq < base + WINDOW_SIZE && nextSeq < total) {
                 byte[] fragment = fragments.get(nextSeq);
 
-                ByteBuffer bufferWithType = ByteBuffer.allocate(1 + fragment.length);
-                bufferWithType.put(PacketHeader.PacketType.FILE.getValue());
+                ByteBuffer bufferWithType = ByteBuffer.allocate(19 + fragment.length);
+                byte[] payloadOnly = Arrays.copyOfRange(fragment, 10, fragment.length); // nur Nutzdaten (nach 10 Byte Header)
+                header = new PacketHeader(myIp, myPort, ip, port, ptype, fragment.length, CRC.calculate(payloadOnly));
+
+                bufferWithType.put(header.toBytes());
                 bufferWithType.put(fragment);
                 byte[] packetData = bufferWithType.array();
 
                 DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
+                LoggerUtil.header(header.toString());
                 socket.send(packet);
                 LoggerUtil.info("GoBackN", "Gesendet: Fragment " + nextSeq);
                 nextSeq++;
             }
 
             try {
-                byte[] ackBuf = new byte[6];
+                byte[] ackBuf = new byte[1024];
                 DatagramPacket ackPacket = new DatagramPacket(ackBuf, ackBuf.length);
                 socket.receive(ackPacket);
 
-                ByteBuffer ackBuffer = ByteBuffer.wrap(ackBuf);
-                if (ackBuffer.get() == (byte) 0x7F) {
-                    int ackMsgId = Short.toUnsignedInt(ackBuffer.getShort());
-                    byte type = ackBuffer.get();
-                    int ackFrag = Short.toUnsignedInt(ackBuffer.getShort());
+                byte[] data = Arrays.copyOfRange(ackBuf, 0, ackPacket.getLength());
+                PacketHeader ackHeader = PacketHeader.fromBytes(data);
 
-                    if (type == 1 && ackMsgId == messageId) {
+                if (ackHeader.type == PacketHeader.PacketType.ACK) {
+                    ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, ackHeader.length);
+                    int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
+                    int ackFrag = ackPayload.getInt();
+                    // ackPayload.getInt(); // TotalChunks → bei ACK egal
+
+                    if (ackMsgId == messageId) {
                         LoggerUtil.info("GoBackN", "ACK erhalten für Fragment " + ackFrag);
                         base = ackFrag + 1;
                     } else {
-                        LoggerUtil.warn("GoBackN", "ACK ignoriert – falsche MessageID oder Typ");
+                        LoggerUtil.warn("GoBackN", "ACK ignoriert – falsche MessageID");
                     }
+                } else {
+                    LoggerUtil.warn("GoBackN", "Paket ist kein ACK – ignoriert");
                 }
             } catch (SocketTimeoutException e) {
                 LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
                 nextSeq = base;
             }
+
+ /*           try {
+                byte[] ackBuf = new byte[29];
+                DatagramPacket ackPacket = new DatagramPacket(ackBuf, ackBuf.length);
+                socket.receive(ackPacket);
+
+                // PacketHeader auslesen
+                PacketHeader ackHeader = PacketHeader.fromBytes(ackBuf);
+
+                // Payload-Header (MessageID, FragNum, TotalChunks — letzterer ist bei ACKs egal)
+                ByteBuffer ackPayload = ByteBuffer.wrap(ackBuf, PacketHeader.HEADER_SIZE, 10);
+                int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
+                int ackFrag = ackPayload.getInt(); // ChunkNumber
+                // ackPayload.getInt(); // totalChunks → bei ACKs ignorieren
+
+                if (ackHeader.type == PacketHeader.PacketType.ACK && ackMsgId == messageId) {
+                    LoggerUtil.info("GoBackN", "ACK erhalten für Fragment " + ackFrag);
+                    base = ackFrag + 1;
+                } else {
+                    LoggerUtil.warn("GoBackN", "ACK ignoriert – falsche MessageID oder Typ");
+                }
+            } catch (SocketTimeoutException e) {
+                LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
+                nextSeq = base;
+            }*/
         }
     }
 
@@ -81,12 +123,12 @@ public class FragmentManager {
 
             int checksum = CRC.calculate(chunkPayload);
 
-            ByteBuffer buffer = ByteBuffer.allocate(10 + chunkPayload.length + 4);
+            ByteBuffer buffer = ByteBuffer.allocate(10 + chunkPayload.length);
             buffer.putShort((short) messageId);
             buffer.putInt(i);
             buffer.putInt(totalChunks);
             buffer.put(chunkPayload);
-            buffer.putInt(checksum);
+            //buffer.putInt(checksum);
 
             chunks.add(buffer.array());
         }
@@ -94,21 +136,58 @@ public class FragmentManager {
         return new FragmentedMessage(messageId, chunks);
     }
 
-
-    // Verarbeitet Chunk + sendet optional ACK zurück
-    public byte[] processChunk(byte[] chunkData, DatagramSocket socket, InetAddress senderIP, int senderPort) {
+    public byte[] processChunk(byte[] chunkData, DatagramSocket socket, InetAddress senderIP, int senderPort, int expectedCRC) {
         try {
             ByteBuffer buffer = ByteBuffer.wrap(chunkData);
             int messageId = Short.toUnsignedInt(buffer.getShort());
             int chunkNumber = buffer.getInt();
             int totalChunks = buffer.getInt();
 
-            int payloadLength = chunkData.length - 10 - 4;
+            int payloadLength = chunkData.length - 10;
             byte[] payload = new byte[payloadLength];
             buffer.get(payload);
 
-            int receivedCRC = buffer.getInt();
             int computedCRC = CRC.calculate(payload);
+            LoggerUtil.debug("FragmentManager", "Header-CRC: " + expectedCRC);
+            LoggerUtil.debug("FragmentManager", "Computed CRC: " + computedCRC);
+
+            if (computedCRC != expectedCRC) {
+                System.out.println("CRC-Fehler: Chunk verworfen (msg=" + messageId + ", chunk=" + chunkNumber + ")");
+                return null;
+            }
+
+            // ACK senden
+            sendAck(socket, senderIP, senderPort, messageId, chunkNumber);
+
+            MessageReassemblyBuffer reassemblyBuffer = reassemblyBuffers.computeIfAbsent(messageId,
+                    id -> new MessageReassemblyBuffer(totalChunks));
+            reassemblyBuffer.addChunk(chunkNumber, payload);
+
+            if (reassemblyBuffer.isComplete()) {
+                reassemblyBuffers.remove(messageId);
+                return reassemblyBuffer.assemble();
+            }
+        } catch (Exception e) {
+            System.out.println("Fehler bei processChunk: " + e.getMessage());
+        }
+        return null;
+    }
+
+
+    // Verarbeitet Chunk + sendet optional ACK zurück
+/*    public byte[] processChunk(byte[] chunkData, DatagramSocket socket, InetAddress senderIP, int senderPort, int expectedCRC) {
+        try {
+            ByteBuffer buffer = ByteBuffer.wrap(chunkData);
+            int messageId = Short.toUnsignedInt(buffer.getShort());
+            int chunkNumber = buffer.getInt();
+            int totalChunks = buffer.getInt();
+
+            int payloadLength = chunkData.length - 10;
+            byte[] payload = new byte[payloadLength];
+            buffer.get(payload);
+
+            int computedCRC = CRC.calculate(payload);
+            int receivedCRC = expectedCRC; // Muss übergeben werden!
             LoggerUtil.debug("FragmentManager", "Empfangener CRC32: " + receivedCRC);
             LoggerUtil.debug("FragmentManager", "Berechneter CRC32: " + computedCRC);
 
@@ -133,16 +212,47 @@ public class FragmentManager {
             System.out.println("Fehler bei processChunk: " + e.getMessage());
         }
         return null;
-    }
+    }*/
+
+//    private void sendAck(DatagramSocket socket, InetAddress ip, int port, int messageId, int fragNum) {
+//        try {
+//            ByteBuffer ack = ByteBuffer.allocate(6);
+//            ack.put((byte) 0x7F); // ACK-Präfix
+//            ack.putShort((short) messageId);
+//            ack.put((byte) 1); // ACK-Typ
+//            ack.putShort((short) fragNum);
+//            DatagramPacket ackPacket = new DatagramPacket(ack.array(), ack.capacity(), ip, port);
+//            socket.send(ackPacket);
+//        } catch (Exception e) {
+//            System.out.println("ACK-Senden fehlgeschlagen: " + e.getMessage());
+//        }
+//    }
 
     private void sendAck(DatagramSocket socket, InetAddress ip, int port, int messageId, int fragNum) {
         try {
-            ByteBuffer ack = ByteBuffer.allocate(6);
-            ack.put((byte) 0x7F); // ACK-Präfix
-            ack.putShort((short) messageId);
-            ack.put((byte) 1); // ACK-Typ
-            ack.putShort((short) fragNum);
-            DatagramPacket ackPacket = new DatagramPacket(ack.array(), ack.capacity(), ip, port);
+            ByteBuffer payload = ByteBuffer.allocate(10);
+            payload.putShort((short) messageId);
+            payload.putInt(fragNum);
+            payload.putInt(0); // TotalChunks bei ACK = 0 (nicht relevant)
+            byte[] payloadArray = payload.array();
+
+            PacketHeader header = new PacketHeader(
+                    myIp,
+                    socket.getLocalPort(),
+                    ip,
+                    port,
+                    PacketHeader.PacketType.ACK,
+                    10, // payload length
+                    CRC.calculate(payloadArray)  // optional: du kannst auch über den Payload CRC rechnen
+            );
+
+            ByteBuffer ackPacketBuffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + 10);
+            ackPacketBuffer.put(header.toBytes());
+            ackPacketBuffer.put(payloadArray);
+
+            DatagramPacket ackPacket = new DatagramPacket(ackPacketBuffer.array(), ackPacketBuffer.capacity(), ip, port);
+            LoggerUtil.goBackAck(messageId, fragNum, ip.getHostAddress(), port);
+
             socket.send(ackPacket);
         } catch (Exception e) {
             System.out.println("ACK-Senden fehlgeschlagen: " + e.getMessage());
