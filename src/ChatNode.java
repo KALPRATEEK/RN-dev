@@ -455,9 +455,10 @@ private void startDataReceiver() {
 
                     if (fullPayload != null) {
                         ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
-                        int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
-
-                        byte[] nameBytes = new byte[fileNameLen];
+                  //      int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
+                        byte[] mesheader = new byte[10];
+                        payloadBuffer.get(mesheader);
+                        byte[] nameBytes = new byte[30];
                         payloadBuffer.get(nameBytes);
                         String fileName = new String(nameBytes, StandardCharsets.UTF_8);
 
@@ -560,11 +561,12 @@ private void startDataReceiver() {
             // Read file content
             byte[] fileData = Files.readAllBytes(Paths.get(filePath));
             String fileName = Paths.get(filePath).getFileName().toString();
-            byte[] fileNameBytes = fileName.getBytes(StandardCharsets.UTF_8);
+            byte[] fileNameBytes = new byte[30];
+            byte[] name = fileName.getBytes(StandardCharsets.UTF_8);
+            System.arraycopy(name, 0,fileNameBytes,0, name.length);
 
             // Prepend filename length and filename before content
-            ByteBuffer filePayload = ByteBuffer.allocate(2 + fileNameBytes.length + fileData.length);
-            filePayload.putShort((short) fileNameBytes.length);
+            ByteBuffer filePayload = ByteBuffer.allocate(10 + fileNameBytes.length + fileData.length);
             filePayload.put(fileNameBytes);
             filePayload.put(fileData);
 
