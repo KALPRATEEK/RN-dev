@@ -37,7 +37,7 @@ public class FragmentManager {
                 byte[] fragment = fragments.get(nextSeq);
 
                 ByteBuffer bufferWithType = ByteBuffer.allocate(19 + fragment.length);
-                byte[] payloadOnly = Arrays.copyOfRange(fragment, 0, fragment.length); // nur Nutzdaten (nach 10 Byte Header)
+                byte[] payloadOnly = Arrays.copyOfRange(fragment, 10, fragment.length); // nur Nutzdaten (nach 10 Byte Header)
                 header = new PacketHeader(myIp, sourcePort, ip, port, ptype, fragment.length, CRC.calculate(payloadOnly));
 
                 bufferWithType.put(header.toBytes());

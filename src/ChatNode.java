@@ -456,16 +456,17 @@ private void startDataReceiver() {
                     if (fullPayload != null) {
                         ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
                   //      int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
-                        byte[] mesheader = new byte[10];
-                        payloadBuffer.get(mesheader);
+                   //     byte[] mesheader = new byte[10];
+                     //   payloadBuffer.get(mesheader);
                         byte[] nameBytes = new byte[30];
                         payloadBuffer.get(nameBytes);
                         String fileName = new String(nameBytes, StandardCharsets.UTF_8);
-
+                        String fileTrim = fileName.trim();
+                        LoggerUtil.info("fileContent",payloadBuffer.toString());
                         byte[] fileContent = new byte[payloadBuffer.remaining()];
-                        payloadBuffer.get(fileContent);
 
-                        Path outputPath = Paths.get("received_" + fileName);
+                        Path outputPath = Paths.get("received_" + fileTrim);
+                        payloadBuffer.get(fileContent);
                         Files.write(outputPath, fileContent);
                         System.out.println("Datei empfangen und gespeichert: " + outputPath);
                     }
