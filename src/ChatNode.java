@@ -129,22 +129,6 @@ public class ChatNode {
         }
     }
 
-    private void sendRoutingTableToSpecificNeighbor(InetSocketAddress neighbor) {
-        try {
-            byte[] tableBytes = encodeRoutingTable();
-            byte[] headerBytes = createRoutingHeader(myIP, routingPort, neighbor.getAddress(), neighbor.getPort(), tableBytes.length);
-
-            byte[] packetData = new byte[headerBytes.length + tableBytes.length];
-            System.arraycopy(headerBytes, 0, packetData, 0, headerBytes.length);
-            System.arraycopy(tableBytes, 0, packetData, headerBytes.length, tableBytes.length);
-
-            DatagramPacket packet = new DatagramPacket(packetData, packetData.length, neighbor.getAddress(), neighbor.getPort());
-            routingSocket.send(packet);
-        } catch (Exception e) {
-            System.out.println("Fehler beim Senden der Routing-Tabelle: " + e.getMessage());
-        }
-    }
-
     private byte[] encodeMyRoutingEntry() throws Exception {
         Collection<RoutingEntry> entries = new ArrayList<>();
         String key = myIP.getHostAddress() + ":" + routingPort;
@@ -253,7 +237,6 @@ public class ChatNode {
         routingSocket.close();
         dataSocket.close();
         System.out.println("Node wurde heruntergefahren.");
-        System.exit(0);
     }
 
     private void startRoutingReceiver() {
@@ -407,79 +390,6 @@ public class ChatNode {
         }
     }
 
-/*    private void startDataReceiver() {
-        new Thread(() -> {
-            byte[] buf = new byte[2048];
-            while (running) {
-                try {
-                    DatagramPacket packet = new DatagramPacket(buf, buf.length);
-                    dataSocket.receive(packet);
-                    ByteBuffer buffer = ByteBuffer.wrap(packet.getData(), 0, packet.getLength());
-
-                    byte type = buffer.get();
-                    String key = packet.getAddress().getHostAddress() + ":" + packet.getPort();
-
-                    if (type == PacketType.SYN.getValue()) {
-                        sendPacket(PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                        LoggerUtil.syn(key);
-
-                    } else if (type == PacketType.SYN_ACK.getValue()) {
-                        establishedConnections.add(key);
-                        System.out.println("Verbindung hergestellt mit " + key);
-
-                    } else if (type == PacketType.FIN.getValue()) {
-                        sendPacket(PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                        LoggerUtil.fin(key);
-                        establishedConnections.remove(key);
-
-
-                    } else if (type == PacketType.FIN_ACK.getValue()) {
-                        LoggerUtil.finAck(key);
-                        establishedConnections.remove(key);
-
-
-                    } else if (type == PacketType.MESSAGE.getValue()) {
-                        byte[] msgBytes = new byte[buffer.remaining()];
-                        buffer.get(msgBytes);
-                        String msg = new String(msgBytes, "UTF-8");
-                        System.out.println("Nachricht empfangen von " + packet.getAddress().getHostAddress()
-                                + ":" + packet.getPort() + " -> " + msg);
-
-                    } else if (type == PacketType.FILE.getValue()) {
-                        // Fragment ohne Typ-Byte extrahieren
-                        byte[] fragment = new byte[packet.getLength() - 1];
-                        buffer.get(fragment); // das erste Byte (type) wurde bereits gelesen
-
-                        byte[] fullPayload = fragmentManager.processChunk(
-                                fragment,
-                                dataSocket,
-                                packet.getAddress(),
-                                packet.getPort()
-                        );
-
-                        if (fullPayload != null) {
-                            ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
-                            int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
-
-                            byte[] nameBytes = new byte[fileNameLen];
-                            payloadBuffer.get(nameBytes);
-                            String fileName = new String(nameBytes, StandardCharsets.UTF_8);
-
-                            byte[] fileContent = new byte[payloadBuffer.remaining()];
-                            payloadBuffer.get(fileContent);
-
-                            Path outputPath = Paths.get("received_" + fileName);
-                            Files.write(outputPath, fileContent);
-                            System.out.println("Datei empfangen und gespeichert: " + outputPath);
-                        }
-                    }
-
-                } catch (Exception e) {
-                    System.out.println("Fehler im DataReceiver: " + e.getMessage());
-                }
-            }
-        }).start();
-    }*/
 private void startDataReceiver() {
     new Thread(() -> {
         byte[] buf = new byte[2048];
@@ -588,36 +498,7 @@ private void startDataReceiver() {
         dataSocket.send(packet);
     }
 
-/*    private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
-        ByteBuffer buffer = ByteBuffer.allocate(1 + data.length);
-        buffer.put(type.getValue());
-        buffer.put(data);
-        byte[] packetData = buffer.array();
-        DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
-        dataSocket.send(packet);
-    }*/
 
-//    public void sendMessage(String ipStr, int port, String message) {
-//        try {
-//            InetAddress destIP = InetAddress.getByName(ipStr);
-//            int destDataPort = port + 1;
-//
-//            byte typeByte = PacketType.MESSAGE.getValue();
-//            byte[] messageBytes = message.getBytes("UTF-8");
-//            PacketHeader header = new PacketHeader(myIP, routingPort, destIP, port, PacketHeader.PacketType.MESSAGE, messageBytes.length, CRC.calculate(messageBytes));
-//
-//            byte[] packetBytes = new byte[1 + messageBytes.length];
-//            packetBytes[0] = typeByte;
-//            System.arraycopy(messageBytes, 0, packetBytes, 1, messageBytes.length);
-//
-//            DatagramPacket packet = new DatagramPacket(packetBytes, packetBytes.length, destIP, destDataPort);
-//            dataSocket.send(packet);
-//
-//            System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
-//        } catch (Exception e) {
-//            System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
-//        }
-//    }
 public void sendMessage(String ipStr, int port, String message){
     try {
         InetAddress destIP = InetAddress.getByName(ipStr);
@@ -669,38 +550,6 @@ public void sendMessage(String ipStr, int port, String message){
             System.out.println("Datei gesendet: " + fileName);
         } catch (Exception e) {
             System.out.println("Fehler beim Senden der Datei: " + e.getMessage());
-        }
-    }
-
-
-
-/*    public enum PacketType {
-        FILE((byte) 0),
-        MESSAGE((byte) 1),
-        SYN((byte) 2),
-        ACK((byte) 3),
-        FIN((byte) 4),
-        SYN_ACK((byte) 5),
-        FIN_ACK((byte) 6);
-
-        private final byte value;
-
-        PacketType(byte value) {
-            this.value = value;
-        }
-
-        public byte getValue() {
-            return value;
-        }
-    }*/
-
-    public void initiateConnection(String ipStr, int port) {
-        try {
-            InetAddress ip = InetAddress.getByName(ipStr);
-            sendPacket(PacketHeader.PacketType.SYN, new byte[0], ip, port + 1);
-            System.out.println("SYN gesendet an " + ipStr + ":" + (port + 1));
-        } catch (Exception e) {
-            System.out.println("Fehler beim Verbindungsaufbau: " + e.getMessage());
         }
     }
 

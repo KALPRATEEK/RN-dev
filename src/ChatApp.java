@@ -75,6 +75,7 @@ public class ChatApp {
                         running = false;
                         System.out.println("Beende...");
                         chatNode.shutdown();
+                        System.exit(0);
                         break;
 
 
