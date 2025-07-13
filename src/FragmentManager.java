@@ -176,7 +176,7 @@ public class FragmentManager {
             byte[] payload = new byte[payloadLength];
             buffer.get(payload);
 
-            int computedCRC = CRC.calculate(payload);
+            int computedCRC = CRC.calculate(chunkData);
             LoggerUtil.debug("FragmentManager", "Header-CRC: " + expectedCRC);
             LoggerUtil.debug("FragmentManager", "Computed CRC: " + computedCRC);
 
