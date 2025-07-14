@@ -149,7 +149,7 @@ public class FragmentManager {
         try {
             ByteBuffer payload = ByteBuffer.allocate(10);
             payload.putShort((short) messageId);
-            payload.putInt(fragNum); // Send current fragment number instead of fragNum + 1
+            payload.putInt(fragNum+1); // Send current fragment number instead of fragNum + 1
             payload.putInt(0); // TotalChunks bei ACK = 0 (nicht relevant)
             byte[] payloadArray = payload.array();
 
