@@ -412,6 +412,7 @@ private void startDataReceiver() {
                         LoggerUtil.syn(key);
 
                     } else if (type == PacketHeader.PacketType.SYN_ACK) {
+                        sendPacket(PacketHeader.PacketType.ACK, new byte[0], header.sourceIP, header.sourcePort);
                         establishedConnections.add(key);
                         System.out.println("Verbindung hergestellt mit " + key);
 
@@ -543,34 +544,28 @@ private void startDataReceiver() {
     }
 
 
-/*public void sendMessage(String ipStr, int port, String message){
-    try {
-        InetAddress destIP = InetAddress.getByName(ipStr);
-        int destDataPort = port + 1;
-
-        // Read message content
-        byte[] messageBytes = message.getBytes("UTF-8");
-
-        // Prepend filename length and filename before content
-        ByteBuffer payload = ByteBuffer.allocate(messageBytes.length);
-        payload.put(messageBytes);
-
-        // Fragment and send with Go-Back-N
-        FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(payload.array());
-        DatagramSocket ackSocket = new DatagramSocket();  // ACKs separat behandeln
-        fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), ackSocket, PacketHeader.PacketType.MESSAGE, destIP, destDataPort);
-        ackSocket.close();  // Nach Abschluss
-
-        System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
-    } catch (Exception e) {
-        System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
-    }
-}*/
-
     public void sendMessage(String ipStr, int port, String message){
         try {
             InetAddress destIP = InetAddress.getByName(ipStr);
             int destDataPort = port + 1;
+            String destKey = destIP.getHostAddress() + ":" + destDataPort;
+
+            if (!establishedConnections.contains(destKey)) {
+                // Send SYN to initiate handshake
+                sendPacket(PacketHeader.PacketType.SYN, new byte[0], destIP, destDataPort);
+
+                // Wait for connection to be established (timeout after 5 seconds)
+                long startTime = System.currentTimeMillis();
+                while (!establishedConnections.contains(destKey) && System.currentTimeMillis() - startTime < 5000) {
+                    Thread.sleep(100);
+                }
+
+                if (!establishedConnections.contains(destKey)) {
+                    System.out.println("Handshake failed: timeout");
+                    return;
+                }
+            }
+            // Connection is established, send the message
 
             byte[] messageBytes = message.getBytes("UTF-8");
             ByteBuffer payload = ByteBuffer.allocate(messageBytes.length);
@@ -598,6 +593,24 @@ private void startDataReceiver() {
         try {
             InetAddress destIP = InetAddress.getByName(destIpStr);
             int destDataPort = destPort + 1;
+            String destKey = destIP.getHostAddress() + ":" + destDataPort;
+
+            if (!establishedConnections.contains(destKey)) {
+                // Send SYN to initiate handshake
+                sendPacket(PacketHeader.PacketType.SYN, new byte[0], destIP, destDataPort);
+
+                // Wait for connection to be established (timeout after 5 seconds)
+                long startTime = System.currentTimeMillis();
+                while (!establishedConnections.contains(destKey) && System.currentTimeMillis() - startTime < 5000) {
+                    Thread.sleep(100);
+                }
+
+                if (!establishedConnections.contains(destKey)) {
+                    System.out.println("Handshake failed: timeout");
+                    return;
+                }
+            }
+            // Connection is established, send the file
 
             // Read file content
             byte[] fileData = Files.readAllBytes(Paths.get(filePath));
