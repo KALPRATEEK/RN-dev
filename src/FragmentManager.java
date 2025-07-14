@@ -206,7 +206,7 @@ public class FragmentManager {
         try {
             ByteBuffer payload = ByteBuffer.allocate(10);
             payload.putShort((short) messageId);
-            payload.putInt(fragNum);
+            payload.putInt(fragNum + 1);
             payload.putInt(0); // TotalChunks bei ACK = 0 (nicht relevant)
             byte[] payloadArray = payload.array();
 
@@ -217,7 +217,7 @@ public class FragmentManager {
                     port,
                     PacketHeader.PacketType.DATA_ACK,
                     10, // payload length
-                    CRC.calculate(payloadArray)  // optional: du kannst auch über den Payload CRC rechnen
+                    CRC.calculate(payloadArray)
             );
 
             ByteBuffer ackPacketBuffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + 10);
