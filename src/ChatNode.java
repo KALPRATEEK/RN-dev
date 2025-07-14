@@ -419,7 +419,11 @@ private void startDataReceiver() {
                             ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
                             int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
                             int ackFrag = ackPayload.getInt();
-                            dataAck.put(ackMsgId,ackFrag);
+                            Integer current = dataAck.get(ackMsgId);
+                            if (current == null || ackFrag > current) {
+                                dataAck.put(ackMsgId, ackFrag);
+                            }
+
                         }
                 } else if (type == PacketHeader.PacketType.FIN) {
                     sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());

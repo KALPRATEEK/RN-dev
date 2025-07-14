@@ -62,9 +62,9 @@ public class FragmentManager {
 
             // Prüfen, ob ACKs empfangen wurden
             Integer ackFrag = dataAck.get(messageId);
-            if (ackFrag != null && ackFrag >= base) {
-                LoggerUtil.info("GoBackN", "ACK-Map: messageId=" + messageId + ", empfangen bis Fragment " + ackFrag);
-                base = ackFrag + 1;
+            if (ackFrag != null && ackFrag > base) {
+                LoggerUtil.info("GoBackN", "ACK-Map: messageId=" + messageId + ", erwartet nun Fragment " + ackFrag);
+                base = ackFrag;
             } else {
                 LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
                 nextSeq = base;
