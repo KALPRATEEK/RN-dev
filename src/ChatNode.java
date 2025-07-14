@@ -566,8 +566,7 @@ private void startDataReceiver() {
             byte[] name = fileName.getBytes(StandardCharsets.UTF_8);
             System.arraycopy(name, 0,fileNameBytes,0, name.length);
 
-            // Prepend filename length and filename before content
-            ByteBuffer filePayload = ByteBuffer.allocate(10 + fileNameBytes.length + fileData.length);
+            ByteBuffer filePayload = ByteBuffer.allocate(fileNameBytes.length + fileData.length);
             filePayload.put(fileNameBytes);
             filePayload.put(fileData);
 

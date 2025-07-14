@@ -37,8 +37,7 @@ public class FragmentManager {
                 byte[] fragment = fragments.get(nextSeq);
 
                 ByteBuffer bufferWithType = ByteBuffer.allocate(19 + fragment.length);
-                byte[] payloadOnly = Arrays.copyOfRange(fragment, 10, fragment.length); // nur Nutzdaten (nach 10 Byte Header)
-                header = new PacketHeader(myIp, sourcePort, ip, port, ptype, fragment.length, CRC.calculate(payloadOnly));
+                header = new PacketHeader(myIp, sourcePort, ip, port, ptype, fragment.length, CRC.calculate(fragment));
 
                 bufferWithType.put(header.toBytes());
                 bufferWithType.put(fragment);
@@ -60,10 +59,11 @@ public class FragmentManager {
                 PacketHeader ackHeader = PacketHeader.fromBytes(data);
 
                 if (ackHeader.type == PacketHeader.PacketType.DATA_ACK) {
+                    LoggerUtil.info("Data_Ack", "Type DataAck Package");
                     ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, ackHeader.length);
                     int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
                     int ackFrag = ackPayload.getInt();
-
+                    LoggerUtil.info("Msg ID und Ackfrag Nr:", messageId + "und" + ackFrag);
                     if (ackMsgId == messageId) {
                         LoggerUtil.info("GoBackN", "DATA ACK erhalten für Fragment " + ackFrag);
                         base = ackFrag + 1;
