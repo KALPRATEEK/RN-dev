@@ -2,7 +2,7 @@ import java.net.InetSocketAddress;
 
 public class LoggerUtil {
 
-    public static boolean enabled = true; // Standard: Logging ist an
+    public static boolean enabled = false; // Standard: Logging ist an
 
     public static void info(String tag, String msg) {
         if (enabled) {
