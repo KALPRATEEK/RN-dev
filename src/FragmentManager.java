@@ -11,7 +11,7 @@ import java.util.concurrent.*;
 public class FragmentManager {
     private static final int MAX_CHUNK_PAYLOAD = 950; // MTU 1000 - Header-Overhead
     private static final int WINDOW_SIZE = 5;         // Go-Back-N Fenstergröße
-    private static final int TIMEOUT_MS = 200;        // Timeout für ACK-Warten
+    private static final int TIMEOUT_MS = 1000;        // Timeout für ACK-Warten
 
     private final Map<Integer, MessageReassemblyBuffer> reassemblyBuffers = new ConcurrentHashMap<>();
     private int nextMessageId = 0;
@@ -54,18 +54,27 @@ public class FragmentManager {
             }
 
             // Warten auf ACK oder Timeout
-            try {
-                Thread.sleep(TIMEOUT_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            long startTime = System.currentTimeMillis();
+            boolean ackReceived = false;
+
+            while (System.currentTimeMillis() - startTime < TIMEOUT_MS) {
+                Integer ackFrag = dataAck.get(messageId);
+                if (ackFrag != null && ackFrag > base) {
+                    LoggerUtil.info("GoBackN", "ACK-Map: messageId=" + messageId + ", erwartet nun Fragment " + ackFrag);
+                    base = ackFrag;
+                    ackReceived = true;
+                    break;
+                }
+
+                try {
+                    Thread.sleep(10); // kurz pausieren (CPU-schonend)
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
 
-            // Prüfen, ob ACKs empfangen wurden
-            Integer ackFrag = dataAck.get(messageId);
-            if (ackFrag != null && ackFrag > base) {
-                LoggerUtil.info("GoBackN", "ACK-Map: messageId=" + messageId + ", erwartet nun Fragment " + ackFrag);
-                base = ackFrag;
-            } else {
+            if (!ackReceived) {
                 LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
                 nextSeq = base;
             }
