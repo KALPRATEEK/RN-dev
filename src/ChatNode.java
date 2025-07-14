@@ -416,17 +416,18 @@ private void startDataReceiver() {
                         System.out.println("Verbindung hergestellt mit " + key);
 
                     }else if (type == PacketHeader.PacketType.DATA_ACK) {
-                            synchronized (dataAck){
-                                ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
-                                int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
-                                int ackFrag = ackPayload.getInt();
-                                Integer current = dataAck.get(ackMsgId);
-                                if (current == null || ackFrag > current) {
-                                    dataAck.put(ackMsgId, ackFrag);
-                                }
-
+                        synchronized (dataAck) {
+                            ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
+                            int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
+                            int ackFrag = ackPayload.getInt();
+                            Integer current = dataAck.get(ackMsgId);
+                            if (current == null || ackFrag > current) {
+                                LoggerUtil.info("DataReceiver", "ACK received for messageId " + ackMsgId + ", fragment " + ackFrag);
+                                dataAck.put(ackMsgId, ackFrag);
                             }
-                    } else if (type == PacketHeader.PacketType.FIN) {
+                        }
+                    }
+                    else if (type == PacketHeader.PacketType.FIN) {
                         sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], header.sourceIP, header.sourcePort);
                         LoggerUtil.fin(key);
                         establishedConnections.remove(key);
@@ -587,15 +588,22 @@ private void startDataReceiver() {
 
             sendPacket(PacketHeader.PacketType.SYN, new byte[0], destIP, destPort);
             LoggerUtil.info("Handshake", "Send Syn");
-            boolean waiting = false;
-            while (waiting){waiting = isConnected(destIP, destPort);}
 
+            long startTime = System.currentTimeMillis();
+            final long TIMEOUT_MS = 5000; // 5-second timeout
+            while (System.currentTimeMillis() - startTime < TIMEOUT_MS) {
+                if (isConnected(destIP, destPort)) {
+                    LoggerUtil.info("Handshake", "Connection established with " + destIP.getHostAddress() + ":" + destPort);
+                    return;
+                }
+                Thread.sleep(100); // Poll every 100ms
+            }
+            LoggerUtil.warn("Handshake", "Timeout waiting for SYN_ACK from " + destIP.getHostAddress() + ":" + destPort);
         } catch (UnknownHostException e) {
             throw new RuntimeException(e);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-
     }
 
     public boolean isConnected(InetAddress ip, int port){

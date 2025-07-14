@@ -30,18 +30,14 @@ public class FragmentManager {
         int base = 0;
         int nextSeq = 0;
         int total = fragments.size();
-        PacketHeader header;
+        int maxRetries = 10;
+        int retries = 0;
 
-        long lastSendTime = System.currentTimeMillis();
-
-        while (base < total) {
-            // Sende neue Fragmente innerhalb des Fensters
+        while (base < total && retries < maxRetries) {
             while (nextSeq < base + WINDOW_SIZE && nextSeq < total) {
                 byte[] fragment = fragments.get(nextSeq);
-
                 ByteBuffer buffer = ByteBuffer.allocate(19 + fragment.length);
-                header = new PacketHeader(myIp, sourcePort, ip, port, ptype, fragment.length, CRC.calculate(fragment));
-
+                PacketHeader header = new PacketHeader(myIp, sourcePort, ip, port, ptype, fragment.length, CRC.calculate(fragment));
                 buffer.put(header.toBytes());
                 buffer.put(fragment);
                 byte[] packetData = buffer.array();
@@ -53,21 +49,20 @@ public class FragmentManager {
                 nextSeq++;
             }
 
-            // Warten auf ACK oder Timeout
             long startTime = System.currentTimeMillis();
             boolean ackReceived = false;
 
             while (System.currentTimeMillis() - startTime < TIMEOUT_MS) {
                 Integer ackFrag = dataAck.get(messageId);
-                if (ackFrag != null && ackFrag > base) {
-                    LoggerUtil.info("GoBackN", "ACK-Map: messageId=" + messageId + ", erwartet nun Fragment " + ackFrag);
-                    base = ackFrag;
+                if (ackFrag != null && ackFrag >= base) { // Accept current or higher fragment
+                    LoggerUtil.info("GoBackN", "ACK-Map: messageId=" + messageId + ", received fragment " + ackFrag);
+                    base = ackFrag + 1; // Advance to next fragment
                     ackReceived = true;
+                    retries = 0; // Reset retries on success
                     break;
                 }
-
                 try {
-                    Thread.sleep(10); // kurz pausieren (CPU-schonend)
+                    Thread.sleep(10);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
@@ -75,14 +70,18 @@ public class FragmentManager {
             }
 
             if (!ackReceived) {
-                LoggerUtil.warn("GoBackN", "Timeout – sende Fenster erneut ab Fragment " + base);
+                LoggerUtil.warn("GoBackN", "Timeout – retry " + retries + " of " + maxRetries + " for fragment " + base);
                 nextSeq = base;
+                retries++;
             }
         }
 
-        LoggerUtil.info("GoBackN", "Alle Fragmente erfolgreich gesendet!");
+        if (retries >= maxRetries) {
+            LoggerUtil.error("GoBackN", "Max retries reached for messageId " + messageId + ", aborting send");
+        } else {
+            LoggerUtil.info("GoBackN", "Alle Fragmente erfolgreich gesendet!");
+        }
     }
-
     public record FragmentedMessage(int messageId, List<byte[]> fragments) {}
 
     public FragmentedMessage fragment(byte[] payload) {
@@ -145,11 +144,12 @@ public class FragmentManager {
         return null;
     }
 
+
     private void sendAck(DatagramSocket socket, InetAddress ip, int port, int messageId, int fragNum) {
         try {
             ByteBuffer payload = ByteBuffer.allocate(10);
             payload.putShort((short) messageId);
-            payload.putInt(fragNum + 1);
+            payload.putInt(fragNum); // Send current fragment number instead of fragNum + 1
             payload.putInt(0); // TotalChunks bei ACK = 0 (nicht relevant)
             byte[] payloadArray = payload.array();
 
@@ -165,7 +165,7 @@ public class FragmentManager {
 
             ByteBuffer ackPacketBuffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + 10);
             ackPacketBuffer.put(header.toBytes());
-            ackPacketBuffer.put(payload);
+            ackPacketBuffer.put(payloadArray); // Use payloadArray instead of payload
 
             DatagramPacket ackPacket = new DatagramPacket(ackPacketBuffer.array(), ackPacketBuffer.capacity(), ip, port);
             LoggerUtil.goBackAck(messageId, fragNum, ip.getHostAddress(), port);
@@ -176,7 +176,6 @@ public class FragmentManager {
             System.out.println("ACK-Senden fehlgeschlagen: " + e.getMessage());
         }
     }
-
     private synchronized int getNextMessageId() {
         return nextMessageId++;
     }
