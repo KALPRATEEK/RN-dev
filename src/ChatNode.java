@@ -405,93 +405,110 @@ private void startDataReceiver() {
 
                 String key = header.sourceIP.getHostAddress() + ":" + header.sourcePort;
                 PacketHeader.PacketType type = header.type;
+                if (header.destIP.equals(myIP))
+                {
+                    if (type == PacketHeader.PacketType.SYN) {
+                        sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        LoggerUtil.syn(key);
 
-                if (type == PacketHeader.PacketType.SYN) {
-                    sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                    LoggerUtil.syn(key);
+                    } else if (type == PacketHeader.PacketType.SYN_ACK) {
+                        establishedConnections.add(key);
+                        System.out.println("Verbindung hergestellt mit " + key);
 
-                } else if (type == PacketHeader.PacketType.SYN_ACK) {
-                    establishedConnections.add(key);
-                    System.out.println("Verbindung hergestellt mit " + key);
+                    }else if (type == PacketHeader.PacketType.DATA_ACK) {
+                            synchronized (dataAck){
+                                ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
+                                int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
+                                int ackFrag = ackPayload.getInt();
+                                Integer current = dataAck.get(ackMsgId);
+                                if (current == null || ackFrag > current) {
+                                    dataAck.put(ackMsgId, ackFrag);
+                                }
 
-                }else if (type == PacketHeader.PacketType.DATA_ACK) {
-                        synchronized (dataAck){
-                            ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
-                            int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
-                            int ackFrag = ackPayload.getInt();
-                            Integer current = dataAck.get(ackMsgId);
-                            if (current == null || ackFrag > current) {
-                                dataAck.put(ackMsgId, ackFrag);
                             }
+                    } else if (type == PacketHeader.PacketType.FIN) {
+                        sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        LoggerUtil.fin(key);
+                        establishedConnections.remove(key);
 
+                    } else if (type == PacketHeader.PacketType.FIN_ACK) {
+                        LoggerUtil.finAck(key);
+                        establishedConnections.remove(key);
+
+                    } else if (type == PacketHeader.PacketType.MESSAGE) {
+                        // Payload ab offset 19 (Header) extrahieren
+                        byte[] fragment = new byte[header.length];
+                        System.arraycopy(data, PacketHeader.HEADER_SIZE, fragment, 0, header.length);
+
+                        byte[] fullPayload = fragmentManager.processChunk(
+                                fragment,
+                                dataSocket,
+                                packet.getAddress(),
+                                packet.getPort(),
+                                header.checksum
+                        );
+
+                        if (fullPayload != null) {
+                            String msg = new String(fullPayload, StandardCharsets.UTF_8);
+                            System.out.println("Nachricht empfangen von " + key + " -> " + msg);
                         }
-                } else if (type == PacketHeader.PacketType.FIN) {
-                    sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
-                    LoggerUtil.fin(key);
-                    establishedConnections.remove(key);
 
-                } else if (type == PacketHeader.PacketType.FIN_ACK) {
-                    LoggerUtil.finAck(key);
-                    establishedConnections.remove(key);
+                    } else if (type == PacketHeader.PacketType.FILE) {
+                        // Payload ab offset 19 (Header) übergeben
+                        byte[] fragment = new byte[header.length];
+                        System.arraycopy(data, PacketHeader.HEADER_SIZE, fragment, 0, header.length);
 
-                } else if (type == PacketHeader.PacketType.MESSAGE) {
-                    // Payload ab offset 19 (Header) extrahieren
-                    byte[] fragment = new byte[header.length];
-                    System.arraycopy(data, PacketHeader.HEADER_SIZE, fragment, 0, header.length);
+                        byte[] fullPayload = fragmentManager.processChunk(
+                                fragment,
+                                dataSocket,
+                                packet.getAddress(),
+                                packet.getPort(),
+                                header.checksum
+                        );
 
-                    byte[] fullPayload = fragmentManager.processChunk(
-                            fragment,
-                            dataSocket,
-                            packet.getAddress(),
-                            packet.getPort(),
-                            header.checksum
-                    );
+                        if (fullPayload != null) {
+                            ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
+                      //      int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
+                       //     byte[] mesheader = new byte[10];
+                         //   payloadBuffer.get(mesheader);
+                            byte[] nameBytes = new byte[30];
+                            payloadBuffer.get(nameBytes);
+                            String fileName = new String(nameBytes, StandardCharsets.UTF_8);
+                            String fileTrim = fileName.trim();
+                            LoggerUtil.info("fileContent",payloadBuffer.toString());
+                            byte[] fileContent = new byte[payloadBuffer.remaining()];
 
-                    if (fullPayload != null) {
-                        String msg = new String(fullPayload, StandardCharsets.UTF_8);
-                        System.out.println("Nachricht empfangen von " + key + " -> " + msg);
+                            Path outputPath = Paths.get("received_" + fileTrim);
+                            payloadBuffer.get(fileContent);
+                            Files.write(outputPath, fileContent);
+                            System.out.println("Datei empfangen und gespeichert: " + outputPath);
+                        }
                     }
 
-                } else if (type == PacketHeader.PacketType.FILE) {
-                    // Payload ab offset 19 (Header) übergeben
-                    byte[] fragment = new byte[header.length];
-                    System.arraycopy(data, PacketHeader.HEADER_SIZE, fragment, 0, header.length);
-
-                    byte[] fullPayload = fragmentManager.processChunk(
-                            fragment,
-                            dataSocket,
-                            packet.getAddress(),
-                            packet.getPort(),
-                            header.checksum
-                    );
-
-                    if (fullPayload != null) {
-                        ByteBuffer payloadBuffer = ByteBuffer.wrap(fullPayload);
-                  //      int fileNameLen = Short.toUnsignedInt(payloadBuffer.getShort());
-                   //     byte[] mesheader = new byte[10];
-                     //   payloadBuffer.get(mesheader);
-                        byte[] nameBytes = new byte[30];
-                        payloadBuffer.get(nameBytes);
-                        String fileName = new String(nameBytes, StandardCharsets.UTF_8);
-                        String fileTrim = fileName.trim();
-                        LoggerUtil.info("fileContent",payloadBuffer.toString());
-                        byte[] fileContent = new byte[payloadBuffer.remaining()];
-
-                        Path outputPath = Paths.get("received_" + fileTrim);
-                        payloadBuffer.get(fileContent);
-                        Files.write(outputPath, fileContent);
-                        System.out.println("Datei empfangen und gespeichert: " + outputPath);
-                    }
                 }
+            else {
+                forwardPacket(header, data, header.destIP, header.destPort);
 
-            } catch (Exception e) {
-                System.out.println("Fehler im DataReceiver: " + e.getMessage());
-                e.printStackTrace();
+            }}
+
+            catch (Exception e) {
+                    System.out.println("Fehler im DataReceiver: " + e.getMessage());
+                    e.printStackTrace();
+                }
             }
-        }
     }).start();
 }
 
+    private void forwardPacket(PacketHeader header, byte[] data, InetAddress ip, int port) throws Exception {
+        LoggerUtil.header(header.toString());
+        ByteBuffer buffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + data.length);
+        buffer.put(header.toBytes());                  // 19 bytes header
+        buffer.put(data);                              // payload
+
+        byte[] packetData = buffer.array();
+        DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
+        dataSocket.send(packet);
+    }
     private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
         PacketHeader header = new PacketHeader(
                 myIP,                                   // source IP
