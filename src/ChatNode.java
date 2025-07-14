@@ -500,19 +500,32 @@ private void startDataReceiver() {
 }
 
     private void forwardPacket(PacketHeader header, byte[] data, InetAddress ip, int port) throws Exception {
-        LoggerUtil.header(header.toString());
-        ByteBuffer buffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + data.length);
-        buffer.put(header.toBytes());                  // 19 bytes header
-        buffer.put(data);                              // payload
+        LoggerUtil.info("Forwarding", "Starting to forward packet to " + ip.getHostAddress() + ":" + port);
+        byte[] payload = Arrays.copyOfRange(data, PacketHeader.HEADER_SIZE, data.length);
+        LoggerUtil.debug("Forwarding", "Extracted payload length: " + payload.length);
+        PacketHeader newHeader = new PacketHeader(
+                header.sourceIP, header.sourcePort, ip, port, header.type, payload.length, CRC.calculate(payload)
+        );
+        LoggerUtil.debug("Forwarding", "New header created with checksum: " + newHeader.checksum);
+
+        ByteBuffer buffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + payload.length);
+        buffer.put(newHeader.toBytes());
+        buffer.put(payload);
 
         byte[] packetData = buffer.array();
+
+        LoggerUtil.debug("Forwarding", "Packet data length after assembly: " + packetData.length);
+
         DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
+        LoggerUtil.header(newHeader.toString());
+        LoggerUtil.info("Forwarding", "Sending packet to " + ip.getHostAddress() + ":" + port);
         dataSocket.send(packet);
+        LoggerUtil.info("Forwarding", "Packet sent successfully");
     }
     private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
         PacketHeader header = new PacketHeader(
                 myIP,                                   // source IP
-                routingPort,                            // source Port
+                dataPort,                            // source Port
                 ip,                                     // destination IP
                 port,                                   // destination Port
                 type,                                   // packet type (e.g. SYN, FIN, MESSAGE)
