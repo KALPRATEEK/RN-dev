@@ -401,7 +401,6 @@ private void startDataReceiver() {
 
                 byte[] data = Arrays.copyOf(packet.getData(), packet.getLength());
                 PacketHeader header = PacketHeader.fromBytes(data);
-                ByteBuffer buffer = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
 
                 String key = header.sourceIP.getHostAddress() + ":" + header.sourcePort;
                 PacketHeader.PacketType type = header.type;
@@ -558,6 +557,8 @@ private void startDataReceiver() {
 
             sendPacket(PacketHeader.PacketType.SYN, new byte[0], destIP, destPort);
             LoggerUtil.info("Handshake", "Send Syn");
+            boolean waiting = false;
+            while (waiting){waiting = isConnected(destIP, destPort);}
 
         } catch (UnknownHostException e) {
             throw new RuntimeException(e);
@@ -567,8 +568,8 @@ private void startDataReceiver() {
 
     }
 
-    public boolean isConnected(String ipStr, int port){
-        String key = ipStr + ":" + port;
+    public boolean isConnected(InetAddress ip, int port){
+        String key = ip.getHostAddress() + ":" + port;
         return establishedConnections.contains(key);
     }
 

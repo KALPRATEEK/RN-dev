@@ -42,7 +42,7 @@ public class ChatApp {
                         System.out.println("the message you want to send"+ ":" + message);
                         chatNode.startHandshake(destIp, destPort);
                         LoggerUtil.info("Handshake", "Warte auf SynAck");
-                        while (!chatNode.isConnected(destIp, destPort)){};
+                        LoggerUtil.info("connected","success");
                         chatNode.sendMessage(destIp, destPort, message);
                         System.out.println("the message you sent"+ ":" + message);
                         break;
@@ -74,7 +74,7 @@ public class ChatApp {
                         int fileDestPort = Integer.parseInt(scanner.nextLine());
                         chatNode.startHandshake(fileDestIp, fileDestPort);
                         LoggerUtil.info("Handshake", "Warte auf SynAck");
-                        while (!chatNode.isConnected(fileDestIp, fileDestPort)){};
+                        //while (!chatNode.isConnected(fileDestIp, fileDestPort)){};
                         chatNode.sendFile(filePath, fileDestIp, fileDestPort);
                         break;
                     case "7":
