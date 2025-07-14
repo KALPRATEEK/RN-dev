@@ -23,6 +23,7 @@ public class ChatNode {
     private volatile boolean running = true;
     private final Set<String> establishedConnections = ConcurrentHashMap.newKeySet();
     FragmentManager fragmentManager;
+    private final java.util.Map<Integer, Integer> dataAck = new java.util.concurrent.ConcurrentHashMap<>();
 
     public ChatNode(InetAddress ip, int routingPort) throws Exception {
         this.routingPort = routingPort;
@@ -30,7 +31,7 @@ public class ChatNode {
         this.routingSocket = new DatagramSocket(routingPort);
         this.dataSocket = new DatagramSocket(dataPort);
         this.myIP = ip;
-        this.fragmentManager  = new FragmentManager(myIP, routingPort);
+        this.fragmentManager  = new FragmentManager(myIP, routingPort, dataAck);
 
         String key = myIP.getHostAddress() + ":" + routingPort;
         routingTable.put(key, new RoutingEntry(myIP, routingPort, myIP, routingPort, 0));
@@ -413,6 +414,13 @@ private void startDataReceiver() {
                     establishedConnections.add(key);
                     System.out.println("Verbindung hergestellt mit " + key);
 
+                }else if (type == PacketHeader.PacketType.DATA_ACK) {
+                        synchronized (dataAck){
+                            ByteBuffer ackPayload = ByteBuffer.wrap(data, PacketHeader.HEADER_SIZE, header.length);
+                            int ackMsgId = Short.toUnsignedInt(ackPayload.getShort());
+                            int ackFrag = ackPayload.getInt();
+                            dataAck.put(ackMsgId,ackFrag);
+                        }
                 } else if (type == PacketHeader.PacketType.FIN) {
                     sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
                     LoggerUtil.fin(key);
@@ -536,17 +544,15 @@ private void startDataReceiver() {
 
             FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(payload.array());
 
-            DatagramSocket ackSocket = new DatagramSocket();
             fragmentManager.sendWithGoBackN(
                     fragmented.messageId(),
                     fragmented.fragments(),
-                    ackSocket,
+                    dataSocket,
                     PacketHeader.PacketType.MESSAGE,
                     destIP,
                     destDataPort,
-                    dataPort  // <-- Wichtig: manueller Port im Header
+                    dataPort
             );
-            ackSocket.close();
 
             System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
         } catch (Exception e) {
@@ -572,9 +578,7 @@ private void startDataReceiver() {
 
             // Fragment and send with Go-Back-N
             FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(filePayload.array());
-            DatagramSocket ackSocket = new DatagramSocket();  // ACKs separat behandeln
-            fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), ackSocket,  PacketHeader.PacketType.FILE, destIP, destDataPort,dataPort);
-            ackSocket.close();  // Nach Abschluss
+            fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), dataSocket,  PacketHeader.PacketType.FILE, destIP, destDataPort,dataPort);
 
 
 
