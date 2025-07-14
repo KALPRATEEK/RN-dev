@@ -405,7 +405,7 @@ private void startDataReceiver() {
 
                 String key = header.sourceIP.getHostAddress() + ":" + header.sourcePort;
                 PacketHeader.PacketType type = header.type;
-                if (header.destIP.equals(myIP))
+                if (header.destIP.equals(myIP) && header.destPort == dataPort)
                 {
                     if (type == PacketHeader.PacketType.SYN) {
                         sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0], header.sourceIP, header.sourcePort);
