@@ -443,8 +443,8 @@ private void startDataReceiver() {
                         byte[] fullPayload = fragmentManager.processChunk(
                                 fragment,
                                 dataSocket,
-                                packet.getAddress(),
-                                packet.getPort(),
+                                header.sourceIP,
+                                header.sourcePort,
                                 header.checksum
                         );
 
@@ -461,8 +461,8 @@ private void startDataReceiver() {
                         byte[] fullPayload = fragmentManager.processChunk(
                                 fragment,
                                 dataSocket,
-                                packet.getAddress(),
-                                packet.getPort(),
+                                header.sourceIP,
+                                header.sourcePort,
                                 header.checksum
                         );
 
