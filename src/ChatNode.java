@@ -408,7 +408,7 @@ private void startDataReceiver() {
                 if (header.destIP.equals(myIP))
                 {
                     if (type == PacketHeader.PacketType.SYN) {
-                        sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        sendPacket(PacketHeader.PacketType.SYN_ACK, new byte[0], header.sourceIP, header.sourcePort);
                         LoggerUtil.syn(key);
 
                     } else if (type == PacketHeader.PacketType.SYN_ACK) {
@@ -427,7 +427,7 @@ private void startDataReceiver() {
 
                             }
                     } else if (type == PacketHeader.PacketType.FIN) {
-                        sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], packet.getAddress(), packet.getPort());
+                        sendPacket(PacketHeader.PacketType.FIN_ACK, new byte[0], header.sourceIP, header.sourcePort);
                         LoggerUtil.fin(key);
                         establishedConnections.remove(key);
 
