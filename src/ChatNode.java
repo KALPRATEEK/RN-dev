@@ -412,6 +412,7 @@ private void startDataReceiver() {
                         LoggerUtil.syn(key);
 
                     } else if (type == PacketHeader.PacketType.SYN_ACK) {
+                        sendPacket(PacketHeader.PacketType.ACK, new byte[0], header.sourceIP, header.sourcePort);
                         establishedConnections.add(key);
                         System.out.println("Verbindung hergestellt mit " + key);
 
@@ -564,6 +565,11 @@ private void startDataReceiver() {
             throw new RuntimeException(e);
         }
 
+    }
+
+    public boolean isConnected(String ipStr, int port){
+        String key = ipStr + ":" + port;
+        return establishedConnections.contains(key);
     }
 
     public void sendMessage(String ipStr, int port, String message){

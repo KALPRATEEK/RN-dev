@@ -147,11 +147,12 @@ public class FragmentManager {
 
     private void sendAck(DatagramSocket socket, InetAddress ip, int port, int messageId, int fragNum) {
         try {
-            ByteBuffer payload = ByteBuffer.allocate(10);
-            payload.putShort((short) messageId);
-            payload.putInt(fragNum + 1);
-            payload.putInt(0); // TotalChunks bei ACK = 0 (nicht relevant)
-            byte[] payloadArray = payload.array();
+           // ByteBuffer payload = ByteBuffer.allocate(10);
+          //  payload.putShort((short) messageId);
+          //  payload.putInt(fragNum + 1);
+          //  payload.putInt(0); // TotalChunks bei ACK = 0 (nicht relevant)
+          //  byte[] payloadArray = payload.array();
+            byte[] payload = new byte[0];
 
             PacketHeader header = new PacketHeader(
                     myIp,
@@ -159,13 +160,13 @@ public class FragmentManager {
                     ip,
                     port,
                     PacketHeader.PacketType.DATA_ACK,
-                    10, // payload length
-                    CRC.calculate(payloadArray)
+                    0, // payload length
+                    CRC.calculate(payload)
             );
 
-            ByteBuffer ackPacketBuffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + 10);
+            ByteBuffer ackPacketBuffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE);
             ackPacketBuffer.put(header.toBytes());
-            ackPacketBuffer.put(payloadArray);
+            //ackPacketBuffer.put(payload);
 
             DatagramPacket ackPacket = new DatagramPacket(ackPacketBuffer.array(), ackPacketBuffer.capacity(), ip, port);
             LoggerUtil.goBackAck(messageId, fragNum, ip.getHostAddress(), port);
