@@ -40,6 +40,7 @@ public class ChatApp {
                         System.out.print("Nachricht: ");
                         String message = scanner.nextLine();
                         System.out.println("the message you want to send"+ ":" + message);
+                        chatNode.startHandshake(destIp, destPort);
                         chatNode.sendMessage(destIp, destPort, message);
                         System.out.println("the message you sent"+ ":" + message);
                         break;

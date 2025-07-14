@@ -499,6 +499,7 @@ private void startDataReceiver() {
     }).start();
 }
 
+
     private void forwardPacket(PacketHeader header, byte[] data, InetAddress ip, int port) throws Exception {
         LoggerUtil.header(header.toString());
         ByteBuffer buffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + data.length);
@@ -510,6 +511,26 @@ private void startDataReceiver() {
         dataSocket.send(packet);
     }
     private void sendPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
+        PacketHeader header = new PacketHeader(
+                myIP,                                   // source IP
+                dataPort,                            // source Port
+                ip,                                     // destination IP
+                port,                                   // destination Port
+                type,                                   // packet type (e.g. SYN, FIN, MESSAGE)
+                data.length,                            // payload length
+                CRC.calculate(data)                     // CRC über payload
+        );
+        LoggerUtil.header(header.toString());
+        ByteBuffer buffer = ByteBuffer.allocate(PacketHeader.HEADER_SIZE + data.length);
+        buffer.put(header.toBytes());                  // 19 bytes header
+        buffer.put(data);                              // payload
+
+        byte[] packetData = buffer.array();
+        DatagramPacket packet = new DatagramPacket(packetData, packetData.length, ip, port);
+        dataSocket.send(packet);
+    }
+
+    private void sendRoutPacket(PacketHeader.PacketType type, byte[] data, InetAddress ip, int port) throws Exception {
         PacketHeader header = new PacketHeader(
                 myIP,                                   // source IP
                 routingPort,                            // source Port
@@ -529,30 +550,21 @@ private void startDataReceiver() {
         dataSocket.send(packet);
     }
 
+    public void startHandshake(String ipStr, int port) {
+        try {
+            InetAddress destIP = InetAddress.getByName(ipStr);
+            int destPort = port + 1;
 
-/*public void sendMessage(String ipStr, int port, String message){
-    try {
-        InetAddress destIP = InetAddress.getByName(ipStr);
-        int destDataPort = port + 1;
+            sendPacket(PacketHeader.PacketType.SYN, new byte[0], destIP, destPort);
+            LoggerUtil.info("Handshake", "Send Syn");
 
-        // Read message content
-        byte[] messageBytes = message.getBytes("UTF-8");
+        } catch (UnknownHostException e) {
+            throw new RuntimeException(e);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
 
-        // Prepend filename length and filename before content
-        ByteBuffer payload = ByteBuffer.allocate(messageBytes.length);
-        payload.put(messageBytes);
-
-        // Fragment and send with Go-Back-N
-        FragmentManager.FragmentedMessage fragmented = fragmentManager.fragment(payload.array());
-        DatagramSocket ackSocket = new DatagramSocket();  // ACKs separat behandeln
-        fragmentManager.sendWithGoBackN(fragmented.messageId(), fragmented.fragments(), ackSocket, PacketHeader.PacketType.MESSAGE, destIP, destDataPort);
-        ackSocket.close();  // Nach Abschluss
-
-        System.out.println("Nachricht gesendet an " + ipStr + ":" + destDataPort);
-    } catch (Exception e) {
-        System.out.println("Fehler beim Senden der Nachricht: " + e.getMessage());
     }
-}*/
 
     public void sendMessage(String ipStr, int port, String message){
         try {
@@ -656,4 +668,6 @@ private void startDataReceiver() {
         buffer.putShort((short) tableLength);
         return buffer.array();
     }
+
+
 }
